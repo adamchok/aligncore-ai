@@ -3,8 +3,13 @@ export type Sentiment = 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE'
 
 export type ActivityType =
   | 'COMPANY_CREATED'
+  | 'COMPANY_UPDATED'
+  | 'COMPANY_DELETED'
   | 'MENTOR_CREATED'
+  | 'MENTOR_UPDATED'
   | 'RELATIONSHIP_CREATED'
+  | 'RELATIONSHIP_UPDATED'
+  | 'RELATIONSHIP_DELETED'
   | 'HEALTH_UPDATED'
   | 'SUMMARY_GENERATED'
   | 'ONBOARDING_COMPLETE'
@@ -13,6 +18,7 @@ export type ActivityType =
   | 'AI_EXTRACT'
   | 'WHATSAPP_MESSAGE'
   | 'WHATSAPP_GROUP_CREATED'
+  | 'KNOWLEDGE_UPLOADED'
 
 export interface ActivityEntry {
   id: string
@@ -28,6 +34,8 @@ export interface CompanyCSVRow {
   name: string
   industry: string
   stage: string
+  /** Product / mission overview — what the company does */
+  about?: string
   problem?: string
   goals?: string
   size?: string
@@ -42,7 +50,12 @@ export interface Mentor {
   industries?: string[]
   available: boolean
   whatsapp_number?: string
+  /** Public URL from Firebase Storage or CDN */
+  photo_url?: string
+  /** Denormalized count from knowledge uploads (mentors only); optional on legacy docs */
+  knowledge_doc_count?: number
   created_at?: string
+  updated_at?: string
 }
 
 export interface Company {
@@ -50,11 +63,16 @@ export interface Company {
   name: string
   industry: string
   stage: string
+  /** What the company builds / does — elevator pitch & context */
+  about?: string
   problem?: string
   goals?: string
   size?: string
   whatsapp_number?: string
+  photo_url?: string
+  knowledge_doc_count?: number
   created_at?: string
+  updated_at?: string
 }
 
 export interface HealthHistory {
@@ -73,8 +91,6 @@ export interface RelationshipEntity {
   lifecycle: LifecycleState
   engagement: {
     health_score: number
-    sessions_completed: number
-    next_session?: string
   }
   comms: {
     last_sentiment?: Sentiment | null
@@ -86,9 +102,12 @@ export interface RelationshipEntity {
   ai_summary_updated_at?: string | null
   match_score?: number
   match_reasoning?: string
+  /** Manual WhatsApp group id (e.g. …@g.us). Usually set automatically when phones exist. */
   wa_group_id?: string | null
   mentor_phone?: string
   company_phone?: string
+  /** Operator notes — internal context not tied to WhatsApp automation */
+  notes?: string | null
   created_at: string
   updated_at: string
 }

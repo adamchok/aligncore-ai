@@ -2,8 +2,13 @@ import type { Firestore } from 'firebase-admin/firestore'
 
 export type ActivityType =
   | 'COMPANY_CREATED'
+  | 'COMPANY_UPDATED'
+  | 'COMPANY_DELETED'
   | 'MENTOR_CREATED'
+  | 'MENTOR_UPDATED'
   | 'RELATIONSHIP_CREATED'
+  | 'RELATIONSHIP_UPDATED'
+  | 'RELATIONSHIP_DELETED'
   | 'HEALTH_UPDATED'
   | 'SUMMARY_GENERATED'
   | 'ONBOARDING_COMPLETE'
@@ -12,6 +17,7 @@ export type ActivityType =
   | 'AI_EXTRACT'
   | 'WHATSAPP_MESSAGE'
   | 'WHATSAPP_GROUP_CREATED'
+  | 'KNOWLEDGE_UPLOADED'
 
 export interface ActivityEntry {
   type: ActivityType

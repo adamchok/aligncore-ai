@@ -7,11 +7,12 @@ import {
   Users,
   Building2,
   Sparkles,
-  MessageSquare,
+  Mail,
   Smartphone,
   ChevronRight,
   Zap,
   Activity,
+  PieChart,
 } from 'lucide-react'
 
 const NAV = [
@@ -19,6 +20,7 @@ const NAV = [
     group: 'Overview',
     items: [
       { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+      { href: '/analytics', label: 'Analytics', icon: PieChart },
       { href: '/activity', label: 'Activity', icon: Activity },
     ],
   },
@@ -32,8 +34,8 @@ const NAV = [
   {
     group: 'AI Tools',
     items: [
-      { href: '/match', label: 'Match', icon: Sparkles },
-      { href: '/onboard', label: 'Onboard', icon: MessageSquare },
+      { href: '/match', label: 'Pair & match', icon: Sparkles },
+      { href: '/onboard', label: 'Gmail Inbox', icon: Mail },
     ],
   },
   {

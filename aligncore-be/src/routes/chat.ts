@@ -1,44 +1,25 @@
 import { randomUUID } from 'crypto'
 import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { generateChat } from '../lib/ai'
+import { runAgent } from '../lib/adk'
+import { onboardingAgent } from '../lib/agents/onboardingAgent'
 import { logActivity } from '../lib/activity'
 import { normalizePhone } from './waha'
 
 export const chatRouter = Router()
-
-const SYSTEM_PROMPT = `You are AlignCore AI's onboarding assistant. Collect a company profile through friendly chat — not a form.
-
-Collect these 6 fields naturally, one at a time:
-1. name — company name
-2. industry — sector (e.g. FinTech, Deep Tech, HealthTech, SaaS)
-3. stage — Idea / Pre-seed / Seed / Series A / Growth
-4. problem — main challenge or problem they're solving
-5. goals — what they want from mentorship
-6. whatsapp — founder's WhatsApp number (for check-ins)
-
-Rules:
-- Be warm and concise. Ask one question at a time.
-- If the user volunteers several fields, acknowledge all and continue.
-- Only when all 6 are confirmed, output this exact tagged block once (no prose inside the tags):
-  <PROFILE>{"name":"...","industry":"...","stage":"...","problem":"...","goals":"...","whatsapp":"..."}</PROFILE>
-- After the closing tag in the same reply, thank them briefly and mention they can use Match to find top mentors.
-
-Before completion: conversational text only; never output PROFILE or partial JSON outside the tags.`
 
 type ChatRole = 'user' | 'model'
 
 interface IncomingChatMessage {
   role: ChatRole
   parts?: Array<{ text: string }>
-  /** API contract shape from MVP guide */
   text?: string
 }
 
-function toGeminiParts(m: IncomingChatMessage): Array<{ text: string }> {
-  if (m.parts?.length) return m.parts
-  if (typeof m.text === 'string' && m.text.length > 0) return [{ text: m.text }]
-  return []
+function toText(m: IncomingChatMessage): string {
+  if (m.parts?.length) return m.parts.map(p => p.text).join('')
+  if (typeof m.text === 'string' && m.text.length > 0) return m.text
+  return ''
 }
 
 chatRouter.post('/', async (req, res) => {
@@ -49,7 +30,6 @@ chatRouter.post('/', async (req, res) => {
       session_id?: string
     }
 
-    // Accept camelCase (FE) or snake_case (legacy); generate a new ID if absent
     const sessionId = bodySessionId || session_id || randomUUID()
 
     if (!messages?.length) {
@@ -57,25 +37,28 @@ chatRouter.post('/', async (req, res) => {
     }
 
     for (let i = 0; i < messages.length; i++) {
-      if (toGeminiParts(messages[i]).length === 0) {
-        return res
-          .status(400)
-          .json({ error: `messages[${i}] must include text or parts with non-empty text` })
+      if (!toText(messages[i])) {
+        return res.status(400).json({
+          error: `messages[${i}] must include text or parts with non-empty text`,
+        })
       }
     }
 
-    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> =
-      messages.map((m) => ({
-        role: (m.role === 'model' ? 'model' : 'user') as 'user' | 'model',
-        parts: toGeminiParts(m),
-      }))
+    // Build a linearized history so the agent has full conversation context in one turn.
+    // This keeps the route stateless (the FE sends the full history each request).
+    const history = messages.slice(0, -1)
+      .map(m => `${m.role === 'model' ? 'Assistant' : 'User'}: ${toText(m)}`)
+      .join('\n')
+    const lastUserText = toText(messages[messages.length - 1])
+    const prompt = history
+      ? `Conversation so far:\n${history}\n\n---\nUser: ${lastUserText}`
+      : lastUserText
 
-    const replyRaw = await generateChat(contents, SYSTEM_PROMPT)
+    const replyRaw = await runAgent(onboardingAgent, prompt)
 
     const profileMatch = replyRaw.match(/<PROFILE>([\s\S]*?)<\/PROFILE>/)
     let profileExtracted: Record<string, string> | null = null
     let isComplete = false
-
     let autoCompanyId: string | null = null
 
     if (profileMatch) {
@@ -97,14 +80,14 @@ chatRouter.post('/', async (req, res) => {
           detail: `Onboarding complete for "${profileExtracted.name || 'company'}" via AI chat`,
         })
 
-        // Auto-create company entity from completed profile
-        const { name, industry, stage, problem, goals, whatsapp } = profileExtracted
+        const { name, industry, stage, about, problem, goals, whatsapp } = profileExtracted
         if (name?.trim() && industry?.trim() && stage?.trim()) {
           try {
             const companyDoc = {
               name: name.trim(),
               industry: industry.trim(),
               stage: stage.trim(),
+              about: about?.trim() ?? '',
               problem: problem?.trim() ?? '',
               goals: goals?.trim() ?? '',
               size: '',

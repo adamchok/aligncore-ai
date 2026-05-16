@@ -5,7 +5,6 @@ import { useParams, useRouter } from 'next/navigation'
 import { db } from '@/lib/firebase'
 import {
   doc,
-  getDoc,
   collection,
   query,
   where,
@@ -23,9 +22,16 @@ import {
   TrendingUp,
   Users,
   Target,
+  AlertCircle,
   Loader2,
+  Pencil,
+  Trash2,
 } from 'lucide-react'
 import Link from 'next/link'
+import KnowledgeDocs from '@/components/KnowledgeDocs'
+import { CompanyPhotoEditor } from '@/components/CompanyPhotoEditor'
+import { CompanyProfileModal } from '@/components/CompanyProfileModal'
+import { deleteCompany } from '@/lib/api'
 
 export default function CompanyDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -37,37 +43,47 @@ export default function CompanyDetailPage() {
   const [historyMap, setHistoryMap] = useState<Record<string, HealthHistory[]>>({})
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editNonce, setEditNonce] = useState(0)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteErr, setDeleteErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    setCompany(null)
+    setPeers([])
+    setNotFound(false)
+    setLoading(true)
+  }, [id])
 
   useEffect(() => {
     if (!id) return
-    getDoc(doc(db, 'companies', id)).then((snap) => {
+    const unsub = onSnapshot(doc(db, 'companies', id), (snap) => {
       if (!snap.exists()) {
         setNotFound(true)
+        setCompany(null)
         setLoading(false)
         return
       }
-      const data = { id: snap.id, ...snap.data() } as Company
-      setCompany(data)
+      setCompany({ id: snap.id, ...snap.data() } as Company)
+      setNotFound(false)
       setLoading(false)
-
-      // Load peer companies (same industry, excluding self)
-      if (data.industry) {
-        const peersQ = query(
-          collection(db, 'companies'),
-          where('industry', '==', data.industry),
-          limit(7)
-        )
-        onSnapshot(peersQ, (pSnap) => {
-          setPeers(
-            pSnap.docs
-              .map((d) => ({ id: d.id, ...d.data() } as Company))
-              .filter((c) => c.id !== id)
-              .slice(0, 6)
-          )
-        })
-      }
     })
+    return unsub
   }, [id])
+
+  useEffect(() => {
+    if (!id || !company?.industry) return
+    const peersQ = query(collection(db, 'companies'), where('industry', '==', company.industry), limit(7))
+    const unsub = onSnapshot(peersQ, (pSnap) => {
+      setPeers(
+        pSnap.docs
+          .map((d) => ({ id: d.id, ...d.data() } as Company))
+          .filter((c) => c.id !== id)
+          .slice(0, 6)
+      )
+    })
+    return unsub
+  }, [id, company?.industry])
 
   useEffect(() => {
     if (!id) return
@@ -92,6 +108,30 @@ export default function CompanyDetailPage() {
     })
     return unsub
   }, [])
+
+  function openEditCompany() {
+    setEditNonce((n) => n + 1)
+    setEditOpen(true)
+  }
+
+  async function handleDeleteCompany() {
+    const n = relationships.length
+    const msg =
+      n > 0
+        ? `Delete “${company?.name ?? 'this company'}” and ${n} mentor relationship${n === 1 ? '' : 's'} (including health history)? This cannot be undone.`
+        : `Delete “${company?.name ?? 'this company'}”? Knowledge documents and profile assets will be removed. This cannot be undone.`
+    if (!confirm(msg)) return
+    setDeleting(true)
+    setDeleteErr(null)
+    try {
+      await deleteCompany(id as string)
+      router.replace('/companies')
+    } catch (e) {
+      setDeleteErr((e as Error).message)
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -122,38 +162,83 @@ export default function CompanyDetailPage() {
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Back to Companies
         </Link>
-        <div className="flex items-start gap-4">
-          <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-violet-600/20 border border-violet-500/30 flex-shrink-0">
-            <Building2 className="w-7 h-7 text-violet-400" />
+        <div className="flex flex-col sm:flex-row gap-6 sm:gap-8 items-start">
+          <div className="rounded-2xl border border-slate-700/50 bg-slate-800/40 p-4 w-full sm:w-auto sm:min-w-[280px]">
+            <CompanyPhotoEditor
+              companyId={company.id}
+              photoUrl={company.photo_url}
+              onCompanyUpdated={setCompany}
+            />
           </div>
-          <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold text-slate-100">{company.name}</h1>
-            <div className="flex items-center gap-3 mt-1 flex-wrap">
-              <span className="flex items-center gap-1 text-sm text-violet-400">
-                <TrendingUp className="w-3.5 h-3.5" /> {company.industry}
-              </span>
-              <span className="text-slate-600">·</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-300">
-                {company.stage}
-              </span>
-              {company.size && (
-                <>
-                  <span className="text-slate-600">·</span>
-                  <span className="flex items-center gap-1 text-xs text-slate-400">
-                    <Users className="w-3 h-3" /> {company.size} people
+          <div className="flex-1 min-w-0 w-full space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <h1 className="text-2xl font-bold text-slate-100">{company.name}</h1>
+                <div className="flex items-center gap-3 mt-1 flex-wrap">
+                  <span className="flex items-center gap-1 text-sm text-violet-400">
+                    <TrendingUp className="w-3.5 h-3.5" /> {company.industry}
                   </span>
-                </>
-              )}
+                  <span className="text-slate-600">·</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-300">
+                    {company.stage}
+                  </span>
+                  {company.size && (
+                    <>
+                      <span className="text-slate-600">·</span>
+                      <span className="flex items-center gap-1 text-xs text-slate-400">
+                        <Users className="w-3 h-3" /> {company.size} people
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={openEditCompany}
+                  className="rounded-xl border border-slate-700/70 bg-slate-800/60 p-2.5 text-slate-400 hover:border-violet-500/40 hover:text-violet-300 hover:bg-slate-800 transition-colors"
+                  aria-label="Edit company"
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteCompany()}
+                  disabled={deleting}
+                  className="rounded-xl border border-slate-700/70 bg-slate-800/60 p-2.5 text-slate-400 hover:border-rose-500/40 hover:text-rose-400 hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                  aria-label="Delete company"
+                >
+                  {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
+            {deleteErr ? <p className="text-xs text-rose-400">{deleteErr}</p> : null}
           </div>
         </div>
       </div>
 
+      <CompanyProfileModal
+        key={`${company.id}-${editNonce}`}
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        company={company}
+        onUpdated={(c) => setCompany(c)}
+      />
+
       {/* Profile Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {company.about?.trim() ? (
+          <div className="md:col-span-2 bg-slate-800/50 border border-slate-700/50 rounded-2xl p-4">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">About</p>
+            <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{company.about.trim()}</p>
+          </div>
+        ) : null}
         {company.problem && (
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-4">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Problem</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+              <AlertCircle className="w-3.5 h-3.5 inline mr-1" />
+              Problem
+            </p>
             <p className="text-sm text-slate-300">{company.problem}</p>
           </div>
         )}
@@ -189,6 +274,9 @@ export default function CompanyDetailPage() {
         )}
       </div>
 
+      {/* Knowledge Documents */}
+      <KnowledgeDocs entityType="company" entityId={id as string} />
+
       {/* Peer Companies */}
       {peers.length > 0 && (
         <div>
@@ -200,7 +288,7 @@ export default function CompanyDetailPage() {
               <Link key={peer.id} href={`/companies/${peer.id}`}>
                 <div className="bg-slate-800/50 border border-slate-700/40 hover:border-violet-500/40 rounded-xl p-3 transition-all cursor-pointer">
                   <div className="flex items-center gap-2">
-                    <Building2 className="w-4 h-4 text-violet-400 flex-shrink-0" />
+                    <Building2 className="w-4 h-4 text-violet-400 shrink-0" />
                     <span className="text-sm font-medium text-slate-200 truncate">{peer.name}</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-1">{peer.stage}</p>

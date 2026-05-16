@@ -2,19 +2,20 @@
 
 import { useState, useEffect } from 'react'
 import { db } from '@/lib/firebase'
-import { collection, onSnapshot, QueryDocumentSnapshot } from 'firebase/firestore'
+import { collection, onSnapshot, QueryDocumentSnapshot, query, orderBy } from 'firebase/firestore'
 import { matchMentors, createRelationship, MatchResult, CompanyProfile } from '@/lib/api'
-import type { Company, RelationshipEntity } from '@/lib/types'
+import type { Company, RelationshipEntity, Mentor } from '@/lib/types'
 import {
   Sparkles,
   Loader2,
   Star,
   Building2,
-  Users,
   ChevronRight,
   CheckCircle2,
   Brain,
   ChevronDown,
+  Link2,
+  UserCircle,
   X,
 } from 'lucide-react'
 
@@ -117,6 +118,7 @@ const EMPTY_FORM: CompanyProfile & { company_id: string } = {
   name: '',
   industry: '',
   stage: '',
+  about: '',
   problem: '',
   goals: '',
   mentor_expertise: '',
@@ -124,6 +126,7 @@ const EMPTY_FORM: CompanyProfile & { company_id: string } = {
 
 export default function MatchPage() {
   const [companies, setCompanies] = useState<Company[]>([])
+  const [mentors, setMentors] = useState<Mentor[]>([])
   const [relationships, setRelationships] = useState<RelationshipEntity[]>([])
   const [selectedCompanyId, setSelectedCompanyId] = useState('')
 
@@ -134,7 +137,12 @@ export default function MatchPage() {
   const [creatingId, setCreatingId] = useState<string | null>(null)
   const [createdIds, setCreatedIds] = useState<Set<string>>(new Set())
 
-  // Subscribe to companies + relationships
+  const [directMentorId, setDirectMentorId] = useState('')
+  const [directSaving, setDirectSaving] = useState(false)
+  const [directErr, setDirectErr] = useState<string | null>(null)
+  const [pairSuccessMsg, setPairSuccessMsg] = useState<string | null>(null)
+
+  // Subscribe to companies + mentors + relationships
   useEffect(() => {
     const u1 = onSnapshot(collection(db, 'companies'), (snap) =>
       setCompanies(snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as Company)))
@@ -142,8 +150,21 @@ export default function MatchPage() {
     const u2 = onSnapshot(collection(db, 'relationships'), (snap) =>
       setRelationships(snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as RelationshipEntity)))
     )
-    return () => { u1(); u2() }
+    const u3 = onSnapshot(query(collection(db, 'mentors'), orderBy('name')), (snap) =>
+      setMentors(snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as Mentor)))
+    )
+    return () => {
+      u1()
+      u2()
+      u3()
+    }
   }, [])
+
+  useEffect(() => {
+    if (!pairSuccessMsg) return
+    const t = setTimeout(() => setPairSuccessMsg(null), 7000)
+    return () => clearTimeout(t)
+  }, [pairSuccessMsg])
 
   // Companies that are not currently in an active mentorship
   const busyCompanyIds = new Set(
@@ -155,6 +176,8 @@ export default function MatchPage() {
 
   function handleSelectCompany(id: string) {
     setSelectedCompanyId(id)
+    setDirectMentorId('')
+    setDirectErr(null)
     if (!id) {
       setForm(EMPTY_FORM)
       return
@@ -166,6 +189,7 @@ export default function MatchPage() {
       name: c.name,
       industry: c.industry ?? '',
       stage: c.stage ?? '',
+      about: c.about ?? '',
       problem: c.problem ?? '',
       goals: c.goals ?? '',
       mentor_expertise: form.mentor_expertise, // keep existing expertise filter
@@ -179,6 +203,8 @@ export default function MatchPage() {
     setForm(EMPTY_FORM)
     setMatches([])
     setCreatedIds(new Set())
+    setDirectMentorId('')
+    setDirectErr(null)
   }
 
   async function handleMatch() {
@@ -191,6 +217,7 @@ export default function MatchPage() {
         name: form.name,
         industry: form.industry,
         stage: form.stage,
+        about: form.about,
         problem: form.problem,
         goals: form.goals,
         mentor_expertise: form.mentor_expertise,
@@ -222,14 +249,56 @@ export default function MatchPage() {
     }
   }
 
+  const mentorsAlreadyWithCompany = new Set(
+    relationships
+      .filter((r) => r.company_id === form.company_id && ACTIVE_LIFECYCLES.has(r.lifecycle))
+      .map((r) => r.mentor_id)
+  )
+  const mentorsPickList = mentors.filter((m) => !mentorsAlreadyWithCompany.has(m.id))
+
+  async function handleDirectPair() {
+    if (!form.company_id?.trim() || !directMentorId) return
+    setDirectSaving(true)
+    setDirectErr(null)
+    try {
+      const mentor = mentors.find((m) => m.id === directMentorId)
+      const company = companies.find((c) => c.id === form.company_id)
+      await createRelationship({
+        mentor_id: directMentorId,
+        company_id: form.company_id,
+        mentor_name: mentor?.name,
+        company_name: company?.name ?? form.name,
+      })
+      const cn = company?.name ?? form.name
+      const mn = mentor?.name ?? 'Mentor'
+      setPairSuccessMsg(`Created relationship: ${cn} ↔ ${mn}`)
+      clearSelection()
+    } catch (e) {
+      const msg = String(e)
+      if (msg.includes('409')) setDirectErr('This mentor is already paired with that company.')
+      else setDirectErr(msg)
+    } finally {
+      setDirectSaving(false)
+    }
+  }
+
   const selectedCompany = selectedCompanyId ? companies.find((c) => c.id === selectedCompanyId) : null
 
   return (
     <div className="max-w-5xl">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-100">AI Match</h1>
-        <p className="text-sm text-slate-500 mt-0.5">Find the best mentor for a startup using semantic AI matching</p>
+        <h1 className="text-2xl font-bold text-slate-100">Pair companies & mentors</h1>
+        <p className="text-sm text-slate-500 mt-0.5">
+          Link a mentor directly, or run AI matching when you want ranked suggestions.
+        </p>
       </div>
+
+      {pairSuccessMsg ? (
+        <div className="mb-6 flex items-start gap-2 rounded-xl border border-emerald-600/40 bg-emerald-950/35 px-4 py-3 text-sm text-emerald-300">
+          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{pairSuccessMsg}</span>
+        </div>
+      ) : null}
 
       {/* Input panel */}
       <div className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-6 mb-8">
@@ -294,6 +363,67 @@ export default function MatchPage() {
           )}
         </div>
 
+        {/* Direct pairing — requires a saved company id */}
+        {form.company_id ? (
+          <div className="mb-6 rounded-2xl border border-emerald-600/35 bg-emerald-950/25 px-5 py-4">
+            <h3 className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-3 flex items-center gap-2">
+              <Link2 className="w-3.5 h-3.5" />
+              Pair without AI
+            </h3>
+            <p className="text-[11px] text-slate-500 mb-3 leading-snug">
+              Creates an active relationship immediately with no AI score or reasoning — useful when you already know the pairing.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
+              <label className="block flex-1 min-w-0">
+                <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Mentor</span>
+                <select
+                  value={directMentorId}
+                  onChange={(e) => {
+                    setDirectMentorId(e.target.value)
+                    setDirectErr(null)
+                  }}
+                  className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500/60 transition-colors"
+                >
+                  <option value="">Choose mentor…</option>
+                  {mentorsPickList.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                      {m.industry ? ` · ${m.industry}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={handleDirectPair}
+                disabled={directSaving || !directMentorId || mentorsPickList.length === 0}
+                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white transition-colors shrink-0"
+              >
+                {directSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" /> Creating…
+                  </>
+                ) : (
+                  <>
+                    <UserCircle className="w-4 h-4" /> Create relationship
+                  </>
+                )}
+              </button>
+            </div>
+            {mentorsPickList.length === 0 && mentors.length > 0 ? (
+              <p className="mt-2 text-[11px] text-amber-500/90">
+                Every mentor already has an active relationship with this company (or none left to choose).
+              </p>
+            ) : null}
+            {directErr ? <p className="mt-2 text-xs text-rose-400">{directErr}</p> : null}
+          </div>
+        ) : selectedCompanyId === '' && companies.length > 0 ? (
+          <p className="mb-6 text-[11px] text-slate-600 leading-snug flex items-start gap-2">
+            <Link2 className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+            Select a company above (saved profile) to enable direct pairing without AI.
+          </p>
+        ) : null}
+
         {/* Divider */}
         <div className="flex items-center gap-3 mb-5">
           <div className="flex-1 h-px bg-slate-700/60" />
@@ -343,6 +473,16 @@ export default function MatchPage() {
             />
           </div>
           <div className="sm:col-span-2">
+            <label className="block text-xs font-medium text-slate-400 mb-1.5">About the company</label>
+            <textarea
+              value={form.about ?? ''}
+              onChange={(e) => setForm((f) => ({ ...f, about: e.target.value }))}
+              rows={3}
+              placeholder="What they build, who they serve, mission — broader context than the problem alone."
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-colors resize-none"
+            />
+          </div>
+          <div className="sm:col-span-2">
             <label className="block text-xs font-medium text-slate-400 mb-1.5">Problem / Challenge</label>
             <textarea
               value={form.problem}
@@ -386,9 +526,9 @@ export default function MatchPage() {
       {matches.length > 0 && (
         <>
           <div className="flex items-center gap-2 mb-4">
-            <Users className="w-4 h-4 text-indigo-400" />
-            <h2 className="text-sm font-semibold text-slate-300">Top Mentor Matches</h2>
-            <span className="text-xs text-slate-600">for {form.name}</span>
+            <Sparkles className="w-4 h-4 text-indigo-400" />
+            <h2 className="text-sm font-semibold text-slate-300">AI mentor suggestions</h2>
+            <span className="text-xs text-slate-600">optional · for {form.name}</span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {matches.map((m) => (

@@ -9,20 +9,16 @@ import {
   collectionGroup,
   QueryDocumentSnapshot,
 } from 'firebase/firestore'
-import type { RelationshipEntity, HealthHistory, Company } from '@/lib/types'
+import type { RelationshipEntity, HealthHistory } from '@/lib/types'
 import RelationshipCard from '@/components/RelationshipCard'
-import IndustryStatsPanel from '@/components/IndustryStatsPanel'
-import { demoPositive, demoNegative, demoReset } from '@/lib/api'
 import {
   Activity,
   AlertTriangle,
   TrendingUp,
-  ThumbsUp,
-  ThumbsDown,
-  RefreshCw,
   Plus,
   Loader2,
   Network,
+  PieChart,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -55,10 +51,8 @@ function StatCard({
 
 export default function DashboardPage() {
   const [relationships, setRelationships] = useState<RelationshipEntity[]>([])
-  const [companies, setCompanies] = useState<Company[]>([])
   const [historyMap, setHistoryMap] = useState<Record<string, HealthHistory[]>>({})
   const [loading, setLoading] = useState(true)
-  const [demoLoading, setDemoLoading] = useState<string | null>(null)
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'relationships'), (snap) => {
@@ -66,13 +60,6 @@ export default function DashboardPage() {
         snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as RelationshipEntity))
       )
       setLoading(false)
-    })
-    return unsub
-  }, [])
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'companies'), (snap) => {
-      setCompanies(snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as Company)))
     })
     return unsub
   }, [])
@@ -92,19 +79,6 @@ export default function DashboardPage() {
     return unsub
   }, [])
 
-  async function runDemo(type: 'positive' | 'negative' | 'reset') {
-    setDemoLoading(type)
-    try {
-      if (type === 'positive') await demoPositive()
-      else if (type === 'negative') await demoNegative()
-      else await demoReset()
-    } catch {
-      /* noop */
-    } finally {
-      setDemoLoading(null)
-    }
-  }
-
   const atRisk = relationships.filter((r) => r.lifecycle === 'AT_RISK' || (r.engagement?.health_score ?? 1) < 0.4)
   const active = relationships.filter((r) => r.lifecycle === 'ACTIVE')
   const avgHealth =
@@ -120,12 +94,20 @@ export default function DashboardPage() {
           <h1 className="text-2xl font-bold text-slate-100">Dashboard</h1>
           <p className="text-sm text-slate-500 mt-0.5">Ecosystem relationship overview</p>
         </div>
-        <Link
-          href="/match"
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors shadow-lg shadow-indigo-900/40"
-        >
-          <Plus className="w-4 h-4" /> New Relationship
-        </Link>
+        <div className="flex flex-wrap items-center gap-2 justify-end">
+          <Link
+            href="/analytics"
+            className="flex items-center gap-2 px-4 py-2 border border-slate-600 hover:border-violet-500/50 hover:bg-slate-800/80 text-slate-300 text-sm font-medium rounded-xl transition-colors"
+          >
+            <PieChart className="w-4 h-4 text-violet-400" /> Analytics
+          </Link>
+          <Link
+            href="/match"
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors shadow-lg shadow-indigo-900/40"
+          >
+            <Plus className="w-4 h-4" /> New Relationship
+          </Link>
+        </div>
       </div>
 
       {/* Stats */}
@@ -158,35 +140,6 @@ export default function DashboardPage() {
           icon={TrendingUp}
           accent="bg-amber-600/20 text-amber-400"
         />
-      </div>
-
-      {/* Industry Stats */}
-      <IndustryStatsPanel companies={companies} relationships={relationships} />
-
-      {/* Demo Controls */}
-      <div className="bg-slate-800/40 border border-slate-700/40 rounded-2xl p-4 mb-8">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Demo Simulation</p>
-        <div className="flex flex-wrap gap-2">
-          {[
-            { type: 'positive' as const, label: 'Positive Signal', icon: ThumbsUp, cls: 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 border-emerald-600/30' },
-            { type: 'negative' as const, label: 'Negative Signal', icon: ThumbsDown, cls: 'bg-rose-600/20 text-rose-400 hover:bg-rose-600/30 border-rose-600/30' },
-            { type: 'reset' as const, label: 'Reset', icon: RefreshCw, cls: 'bg-slate-600/20 text-slate-400 hover:bg-slate-600/30 border-slate-600/30' },
-          ].map(({ type, label, icon: Icon, cls }) => (
-            <button
-              key={type}
-              onClick={() => runDemo(type)}
-              disabled={!!demoLoading}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium border transition-all disabled:opacity-50 ${cls}`}
-            >
-              {demoLoading === type ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Icon className="w-3.5 h-3.5" />
-              )}
-              {label}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Relationship Cards */}

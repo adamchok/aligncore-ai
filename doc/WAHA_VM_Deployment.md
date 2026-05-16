@@ -13,13 +13,14 @@
 3. [Open Firewall for Port 3000](#3-open-firewall-for-port-3000)
 4. [Install Docker on the VM](#4-install-docker-on-the-vm)
 5. [Run WAHA](#5-run-waha)
-6. [First-Time QR Authentication](#6-first-time-qr-authentication)
-7. [Configure Webhook → AlignCore BE](#7-configure-webhook--aligncore-be)
-8. [Update AlignCore BE with WAHA URL](#8-update-aligncore-be-with-waha-url)
-9. [Verify the Full Flow](#9-verify-the-full-flow)
-10. [Keeping WAHA Alive](#10-keeping-waha-alive)
-11. [Quick Command Reference](#11-quick-command-reference)
-12. [Troubleshooting](#12-troubleshooting)
+6. [Reverse Proxy with nginx (recommended)](#6-reverse-proxy-with-nginx-recommended)
+7. [First-Time QR Authentication](#7-first-time-qr-authentication)
+8. [Configure Webhook → AlignCore BE](#8-configure-webhook--aligncore-be)
+9. [Update AlignCore BE with WAHA URL](#9-update-aligncore-be-with-waha-url)
+10. [Verify the Full Flow](#10-verify-the-full-flow)
+11. [Keeping WAHA Alive](#11-keeping-waha-alive)
+12. [Quick Command Reference](#12-quick-command-reference)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -31,7 +32,8 @@ Demo Phone (WhatsApp)
       ▼
 ┌──────────────────────────────────────┐
 │  GCE e2-small  (asia-southeast1)     │
-│  External IP: X.X.X.X:3000          │
+│  External IP: X.X.X.X                │
+│  nginx :80 / :443 → 127.0.0.1:3000   │  ← optional but recommended (§6)
 │  Docker: devlikeapro/waha (GOWS)    │
 │  Volume: ~/waha-sessions → /app/.sessions │
 └────────────────┬─────────────────────┘
@@ -109,6 +111,8 @@ gcloud compute instances describe waha-vm \
 
 ## 3. Open Firewall for Port 3000
 
+This exposes WAHA directly on **TCP 3000**. If you plan to use **nginx on 80/443** only ([§6](#6-reverse-proxy-with-nginx-recommended)), you can skip opening 3000 publicly and rely on `allow-waha-http` instead — after verifying nginx works, delete `allow-waha`.
+
 ```bash
 gcloud compute firewall-rules create allow-waha \
   --direction=INGRESS \
@@ -120,6 +124,8 @@ gcloud compute firewall-rules create allow-waha \
 ```
 
 Your WAHA URL will be: `http://EXTERNAL_IP:3000`
+
+After you add nginx ([§6](#6-reverse-proxy-with-nginx-recommended)), prefer **`http://EXTERNAL_IP`** (port 80) or **`https://your-domain`** if you terminate TLS with Certbot.
 
 ---
 
@@ -198,16 +204,144 @@ curl -s http://EXTERNAL_IP:3000/api/health
 
 ---
 
-## 6. First-Time QR Authentication
+## 6. Reverse Proxy with nginx (recommended)
+
+nginx sits in front of WAHA so you can use **port 80/443**, add **HTTPS** with a domain, and optionally **stop exposing port 3000** on the public internet. WAHA’s dashboard and API use **WebSocket upgrades**; the config below forwards those correctly.
+
+Run **inside the VM** (after [§5](#5-run-waha) works on port 3000).
+
+### Step 1 — Pin WAHA to localhost (optional but recommended)
+
+If WAHA was started with `-p 3000:3000`, recreate the container so it only listens on the loopback interface (not the VM’s external NIC):
+
+```bash
+docker stop waha && docker rm waha
+
+mkdir -p ~/waha-sessions
+WAHA_API_KEY="REPLACE_WITH_STRONG_SECRET"
+WAHA_DASHBOARD_PASSWORD="REPLACE_WITH_DASHBOARD_PASSWORD"
+
+docker run -d \
+  --name waha \
+  --restart=unless-stopped \
+  -p 127.0.0.1:3000:3000 \
+  -v ~/waha-sessions:/app/.sessions \
+  -e WHATSAPP_DEFAULT_ENGINE=GOWS \
+  -e WAHA_API_KEY="$WAHA_API_KEY" \
+  -e WAHA_WORKER_ID=waha-vm-1 \
+  -e WHATSAPP_RESTART_ALL_SESSIONS=true \
+  -e WAHA_PRINT_QR=false \
+  -e WAHA_LOG_FORMAT=PRETTY \
+  -e WAHA_LOG_LEVEL=info \
+  -e WHATSAPP_API_PORT=3000 \
+  -e WAHA_DASHBOARD_ENABLED=true \
+  -e WAHA_DASHBOARD_USERNAME=admin \
+  -e WAHA_DASHBOARD_PASSWORD="$WAHA_DASHBOARD_PASSWORD" \
+  devlikeapro/waha:latest
+```
+
+Keep using **`127.0.0.1:3000`** in `proxy_pass` below.
+
+### Step 2 — Install nginx
+
+```bash
+sudo apt update && sudo apt install -y nginx
+```
+
+### Step 3 — Site configuration
+
+Create `/etc/nginx/sites-available/waha`:
+
+```nginx
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    # Increase if you upload large attachments through WAHA/API
+    client_max_body_size 25m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket / live dashboard
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+Enable it and reload:
+
+```bash
+sudo ln -sf /etc/nginx/sites-available/waha /etc/nginx/sites-enabled/waha
+sudo rm -f /etc/nginx/sites-enabled/default   # avoid clash with default_server
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Quick check from your **local machine**:
+
+```bash
+curl -s http://EXTERNAL_IP/api/health
+# Expected: {"status":"UP","timestamp":"..."}
+```
+
+Dashboard: **`http://EXTERNAL_IP/dashboard`** (same as before, but port 80).
+
+### Step 4 — Firewall: allow HTTP/HTTPS
+
+Create a rule for nginx (adjust if you already allow these elsewhere):
+
+```bash
+gcloud compute firewall-rules create allow-waha-http \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:80,tcp:443 \
+  --target-tags=waha-server \
+  --source-ranges=0.0.0.0/0 \
+  --description="WAHA via nginx (HTTP/HTTPS)"
+```
+
+If WAHA is bound to **`127.0.0.1:3000`**, you can **delete** the old `allow-waha` rule so **3000 is no longer open on the internet**:
+
+```bash
+gcloud compute firewall-rules delete allow-waha
+```
+
+### Step 5 — HTTPS with Let’s Encrypt (optional)
+
+Use when you have a **DNS A record** pointing to `EXTERNAL_IP` (e.g. `waha.yourdomain.com`):
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d waha.yourdomain.com
+```
+
+Certbot edits the nginx server block for TLS. Use **`https://waha.yourdomain.com`** everywhere you previously used `http://EXTERNAL_IP:3000` (AlignCore `WAHA_URL`, webhook testing, dashboard bookmark).
+
+---
+
+## 7. First-Time QR Authentication
 
 You only need to do this **once**. After the first scan, session data is saved to `~/waha-sessions` and automatically restored on any restart.
+
+Set `WAHA_URL` to the **same base URL clients use to reach WAHA**: `http://EXTERNAL_IP:3000` if you skipped nginx, or `http://EXTERNAL_IP` / `https://waha.yourdomain.com` if you completed [§6](#6-reverse-proxy-with-nginx-recommended).
 
 ### Step 1 — Create the session
 
 Run from your **local machine** (replace `EXTERNAL_IP` and `WAHA_API_KEY`):
 
 ```bash
-WAHA_URL="http://EXTERNAL_IP:3000"
+WAHA_URL="http://EXTERNAL_IP:3000"   # or http://EXTERNAL_IP after nginx; use https if Certbot is enabled
 API_KEY="REPLACE_WITH_STRONG_SECRET"
 
 curl -s -X POST "$WAHA_URL/api/sessions" \
@@ -243,6 +377,7 @@ curl -s "$WAHA_URL/api/sessions/aligncore-demo" \
 **Option A — Dashboard (easiest):**
 ```
 Open in browser: http://EXTERNAL_IP:3000/dashboard
+  — or, if nginx is in front (§6): http://EXTERNAL_IP/dashboard  (or https://your-domain/dashboard)
 Username: admin
 Password: REPLACE_WITH_DASHBOARD_PASSWORD
 Navigate: Sessions → aligncore-demo → QR Code tab
@@ -258,7 +393,7 @@ curl -s "$WAHA_URL/api/aligncore-demo/auth/qr" \
 ```
 
 > The first QR expires in **60 seconds**, then 20 seconds each refresh. Scan quickly.
-> If `FAILED`, restart the session (see §12) and try again.
+> If `FAILED`, restart the session (see §13) and try again.
 
 ### Step 4 — Scan with WhatsApp
 
@@ -281,7 +416,7 @@ curl -s "$WAHA_URL/api/sessions/aligncore-demo/me" \
 
 ---
 
-## 7. Configure Webhook → AlignCore BE
+## 8. Configure Webhook → AlignCore BE
 
 Now point WAHA at your AlignCore BE so every inbound WhatsApp message triggers sentiment analysis.
 
@@ -328,9 +463,11 @@ Your BE reads `payload.body` for Gemini analysis and `payload.from` to identify 
 
 ---
 
-## 8. Update AlignCore BE with WAHA URL
+## 9. Update AlignCore BE with WAHA URL
 
 ### Local dev (`.env` in `aligncore-be/`)
+
+Use the **reachable** WAHA base URL (must match §6 / §7 — include `https://` if you use Certbot).
 
 ```bash
 WAHA_URL=http://EXTERNAL_IP:3000
@@ -347,7 +484,7 @@ gcloud run services update aligncore-be \
 
 ---
 
-## 9. Verify the Full Flow
+## 10. Verify the Full Flow
 
 ### Test 1 — Simulate a webhook directly (no phone needed)
 
@@ -362,14 +499,15 @@ curl -s -X POST "${BE_URL}/api/waha/webhook" \
       "from": "601112345678@c.us"
     }
   }' | python3 -m json.tool
-# Expected: {"ok":true,"sentiment":"POSITIVE","health_score_before":0.72,"health_score_after":0.87,...}
+# If that phone matches an entity with an active relationship: {"ok":true,"sentiment":"...","health_score":...,"relationship_id":"<firestore-id>"}
+# If no matching relationship: {"ok":true,"skipped":"no matching relationship"}
 ```
 
 ### Test 2 — Real WhatsApp message
 
 Send a text from the linked phone. Watch:
 1. WAHA VM receives it → POSTs to AlignCore BE
-2. BE calls Gemini → updates Firestore `relationships/demo-re-001`
+2. BE resolves the **`relationships/{id}`** doc (group `wa_group_id`, or DM phone → mentor/company), calls Gemini → updates that doc
 3. FE dashboard `onSnapshot` fires → health score animates live
 
 ### Check WAHA logs on the VM
@@ -384,7 +522,7 @@ docker logs waha -f --tail=50
 
 ---
 
-## 10. Keeping WAHA Alive
+## 11. Keeping WAHA Alive
 
 `--restart=unless-stopped` handles most cases automatically:
 
@@ -398,8 +536,8 @@ docker logs waha -f --tail=50
 **Before the demo pitch — confirm WAHA is healthy:**
 
 ```bash
-# From your local machine
-curl -s "http://EXTERNAL_IP:3000/api/sessions/aligncore-demo" \
+# From your local machine (same WAHA_URL style as §7 — omit :3000 if using nginx on port 80)
+curl -s "$WAHA_URL/api/sessions/aligncore-demo" \
   -H "X-Api-Key: REPLACE_WITH_STRONG_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])"
 # Must print: WORKING
@@ -407,11 +545,11 @@ curl -s "http://EXTERNAL_IP:3000/api/sessions/aligncore-demo" \
 
 ---
 
-## 11. Quick Command Reference
+## 12. Quick Command Reference
 
 ```bash
 # --- Run these from your local machine ---
-WAHA_URL="http://EXTERNAL_IP:3000"
+WAHA_URL="http://EXTERNAL_IP:3000"   # or http://EXTERNAL_IP / https://your-domain after §6
 API_KEY="REPLACE_WITH_STRONG_SECRET"
 BE_URL="https://aligncore-be-XXXX-as.a.run.app"
 
@@ -449,18 +587,22 @@ docker restart waha
 
 # Check session files are persisted
 ls ~/waha-sessions/
+
+# nginx (after §6): test config / reload after edits
+sudo nginx -t && sudo systemctl reload nginx
+sudo journalctl -u nginx -n 30 --no-pager
 ```
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 ### Session stuck in `SCAN_QR_CODE` — QR expired
 ```bash
 # Get a fresh QR by restarting the session
 curl -s -X POST "$WAHA_URL/api/sessions/aligncore-demo/restart" \
   -H "X-Api-Key: $API_KEY"
-# Wait 10s, then fetch QR again (§6 Step 3)
+# Wait 10s, then fetch QR again (§7 Step 3)
 ```
 
 ### Session in `FAILED` state
@@ -470,19 +612,39 @@ curl -s -X POST "$WAHA_URL/api/sessions/aligncore-demo/logout" \
   -H "X-Api-Key: $API_KEY"
 curl -s -X POST "$WAHA_URL/api/sessions/aligncore-demo/start" \
   -H "X-Api-Key: $API_KEY"
-# Repeat QR scan (§6)
+# Repeat QR scan (§7)
 ```
 
-### Cannot reach `http://EXTERNAL_IP:3000`
-```bash
-# 1. Confirm firewall rule exists
-gcloud compute firewall-rules describe allow-waha
+### Cannot reach WAHA (`http://EXTERNAL_IP:3000`, `http://EXTERNAL_IP`, or HTTPS)
 
-# 2. Confirm container is running on the VM
+```bash
+# 1. Confirm a firewall rule allows the port you use:
+gcloud compute firewall-rules describe allow-waha          # tcp:3000
+gcloud compute firewall-rules describe allow-waha-http    # tcp:80,443 after §6
+
+# 2. Confirm WAHA is listening (inside VM)
+gcloud compute ssh waha-vm --zone=YOUR_ZONE -- curl -s http://127.0.0.1:3000/api/health
+
+# 3. If §6 nginx is enabled, confirm nginx proxies correctly (inside VM)
+gcloud compute ssh waha-vm --zone=YOUR_ZONE -- curl -s http://127.0.0.1/api/health
+
+# 4. Confirm container is running
 gcloud compute ssh waha-vm --zone=YOUR_ZONE -- docker ps
 
-# 3. If container is not running, start it
+# 5. If container is not running, start it
 gcloud compute ssh waha-vm --zone=YOUR_ZONE -- docker start waha
+```
+
+### nginx returns `502 Bad Gateway`
+
+Usually nginx cannot reach WAHA on `127.0.0.1:3000` (container stopped, wrong bind, or WAHA still starting).
+
+```bash
+gcloud compute ssh waha-vm --zone=YOUR_ZONE
+sudo nginx -t
+sudo systemctl status nginx --no-pager
+curl -s http://127.0.0.1:3000/api/health
+docker logs waha --tail=40
 ```
 
 ### Webhook not reaching AlignCore BE
@@ -495,7 +657,7 @@ curl -s "$WAHA_URL/api/sessions/aligncore-demo" \
   -H "X-Api-Key: $API_KEY" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d['config']['webhooks'], indent=2))"
 
-# 3. Update webhook URL if it changed (§7)
+# 3. Update webhook URL if it changed (§8)
 ```
 
 ### Docker image is stale / WAHA update needed
@@ -505,7 +667,7 @@ gcloud compute ssh waha-vm --zone=YOUR_ZONE
 
 docker pull devlikeapro/waha:latest
 docker stop waha && docker rm waha
-# Re-run the docker run command from §5
+# Re-run the docker run from §5 (direct port 3000) or §6 Step 1 (127.0.0.1:3000 + nginx)
 # Session data in ~/waha-sessions is safe — the volume persists
 ```
 

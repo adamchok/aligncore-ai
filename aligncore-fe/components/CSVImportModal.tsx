@@ -96,7 +96,7 @@ export default function CSVImportModal({ onClose, onDone }: Props) {
             <p className="text-xs text-slate-400 mb-3">
               Upload a CSV with columns:{' '}
               <code className="text-violet-300 bg-slate-800 px-1 rounded">
-                name, industry, stage, problem, goals, size
+                name, industry, stage, about, problem, goals, size
               </code>
               . Only <strong className="text-slate-300">name</strong>,{' '}
               <strong className="text-slate-300">industry</strong>, and{' '}

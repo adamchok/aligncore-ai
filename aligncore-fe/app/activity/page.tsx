@@ -55,14 +55,22 @@ const ENTITY_STYLE: Record<string, { border: string; icon: React.ReactNode }> = 
 
 const TYPE_LABEL: Record<string, string> = {
   COMPANY_CREATED: 'Company Created',
+  COMPANY_UPDATED: 'Company Updated',
+  COMPANY_DELETED: 'Company Deleted',
   MENTOR_CREATED: 'Mentor Added',
+  MENTOR_UPDATED: 'Mentor Updated',
   RELATIONSHIP_CREATED: 'Relationship Created',
+  RELATIONSHIP_UPDATED: 'Relationship Updated',
+  RELATIONSHIP_DELETED: 'Relationship Deleted',
   HEALTH_UPDATED: 'Health Updated',
   SUMMARY_GENERATED: 'AI Summary',
   ONBOARDING_COMPLETE: 'Onboarding Complete',
   LIFECYCLE_CHANGED: 'Status Changed',
   CSV_IMPORT: 'CSV Import',
   AI_EXTRACT: 'AI Extraction',
+  WHATSAPP_MESSAGE: 'WhatsApp Message',
+  WHATSAPP_GROUP_CREATED: 'WhatsApp Group',
+  KNOWLEDGE_UPLOADED: 'Knowledge Uploaded',
 }
 
 export default function ActivityPage() {

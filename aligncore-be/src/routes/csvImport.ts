@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
 import { logActivity } from '../lib/activity'
+import { normalizePhone } from './waha'
 
 export const csvImportRouter = Router()
 
@@ -8,6 +9,7 @@ interface CompanyRow {
   name: string
   industry: string
   stage: string
+  about?: string
   problem?: string
   goals?: string
   size?: string
@@ -40,9 +42,13 @@ csvImportRouter.post('/companies/batch', async (req, res) => {
           name: row.name.trim(),
           industry: row.industry.trim(),
           stage: row.stage.trim(),
+          about: row.about?.trim() ?? '',
           problem: row.problem?.trim() ?? '',
           goals: row.goals?.trim() ?? '',
           size: row.size?.trim() ?? '',
+          whatsapp_number: normalizePhone(''),
+          photo_url: '',
+          knowledge_doc_count: 0,
           created_at: now,
         }
         const ref = await adminDb.collection('companies').add(doc)

@@ -1,5 +1,6 @@
 import { Router } from 'express'
-import { generateText } from '../lib/ai'
+import { runAgent } from '../lib/adk'
+import { extractAgent } from '../lib/agents/extractAgent'
 import { logActivity } from '../lib/activity'
 import { adminDb } from '../lib/firebase-admin'
 
@@ -9,6 +10,7 @@ interface ExtractedProfile {
   name: string
   industry: string
   stage: string
+  about: string
   problem: string
   goals: string
   size: string
@@ -29,30 +31,10 @@ aiExtractRouter.post('/extract', async (req, res) => {
       return res.status(400).json({ error: 'text is too short to extract a meaningful profile' })
     }
 
-    const prompt = `Extract a structured company profile from the text below.
-Reply with JSON only — no markdown, no explanation, no extra keys.
-
-Schema:
-{
-  "name": "company name",
-  "industry": "one of: ${INDUSTRIES.join(', ')}",
-  "stage": "one of: ${STAGES.join(', ')}",
-  "problem": "1-2 sentences describing the problem they solve",
-  "goals": "1-2 sentences describing their goals or what they want from mentorship",
-  "size": "team size as a string e.g. '5-10', or empty string if unknown"
-}
-
-Use empty string "" for any field that cannot be confidently inferred.
-
-Text:
-"""
-${text.trim().slice(0, 2000)}
-"""`
-
-    const raw = await generateText(prompt)
+    const raw = await runAgent(extractAgent, text.trim().slice(0, 2000))
     const clean = raw.replace(/```json?\n?/gi, '').replace(/```/g, '').trim()
 
-    let profile: ExtractedProfile = { name: '', industry: '', stage: '', problem: '', goals: '', size: '' }
+    let profile: ExtractedProfile = { name: '', industry: '', stage: '', about: '', problem: '', goals: '', size: '' }
 
     try {
       const parsed = JSON.parse(clean) as Partial<ExtractedProfile>
@@ -60,12 +42,13 @@ ${text.trim().slice(0, 2000)}
         name: parsed.name?.trim() ?? '',
         industry: INDUSTRIES.includes(parsed.industry ?? '') ? (parsed.industry ?? '') : '',
         stage: STAGES.includes(parsed.stage ?? '') ? (parsed.stage ?? '') : '',
+        about: parsed.about?.trim() ?? '',
         problem: parsed.problem?.trim() ?? '',
         goals: parsed.goals?.trim() ?? '',
         size: parsed.size?.trim() ?? '',
       }
     } catch {
-      // Return empty profile rather than 500 — FE handles gracefully
+      // Return empty profile rather than 500
     }
 
     await logActivity(adminDb, {

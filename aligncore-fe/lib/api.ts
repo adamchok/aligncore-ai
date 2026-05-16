@@ -1,4 +1,4 @@
-import type { Mentor, Company, LifecycleState, CompanyCSVRow } from './types'
+import type { Mentor, Company, LifecycleState, CompanyCSVRow, RelationshipEntity } from './types'
 
 const BE = process.env.NEXT_PUBLIC_BE_URL ?? 'http://localhost:4000'
 
@@ -21,6 +21,8 @@ export interface CompanyProfile {
   name: string
   industry?: string
   stage?: string
+  /** What the company does / builds */
+  about?: string
   problem?: string
   goals?: string
   mentor_expertise?: string
@@ -59,24 +61,62 @@ export interface ChatResponse {
 export const sendChat = (messages: ChatMessage[], sessionId?: string) =>
   req<ChatResponse>('POST', '/api/chat', { messages, sessionId })
 
-// ── Demo ─────────────────────────────────────────────────────────────────────
-
-export const demoPositive = () => req<{ ok: boolean }>('GET', '/api/demo/simulate-positive')
-export const demoNegative = () => req<{ ok: boolean }>('GET', '/api/demo/simulate-negative')
-export const demoReset = () => req<{ ok: boolean }>('GET', '/api/demo/reset')
-
 // ── Entities — Mentors ───────────────────────────────────────────────────────
 
 export const createMentor = (data: Omit<Mentor, 'id' | 'created_at'>) =>
   req<{ id: string; mentor: Mentor }>('POST', '/api/entities/mentors', data)
 
-export const updateMentor = (id: string, data: Partial<Omit<Mentor, 'id'>>) =>
-  req<{ id: string }>('PATCH', `/api/entities/mentors/${id}`, data)
+export const updateMentor = (id: string, data: Partial<Omit<Mentor, 'id' | 'created_at'>>) =>
+  req<{ id: string; mentor: Mentor }>('PATCH', `/api/entities/mentors/${id}`, data)
+
+/** Multipart upload to GCS via backend. Updates mentor.photo_url (requires KNOWLEDGE_BUCKET). */
+export async function uploadMentorProfilePhoto(mentorId: string, file: File): Promise<Mentor> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BE}/api/entities/mentors/${mentorId}/photo`, { method: 'POST', body: form })
+  const text = await res.text()
+  if (!res.ok) {
+    let msg = text || `Upload failed (${res.status})`
+    try {
+      const j = JSON.parse(text) as { error?: string }
+      if (j.error) msg = j.error
+    } catch {
+      /* keep msg */
+    }
+    throw new Error(msg)
+  }
+  const data = JSON.parse(text) as { mentor: Mentor }
+  return data.mentor
+}
 
 // ── Entities — Companies ─────────────────────────────────────────────────────
 
 export const createCompany = (data: Omit<Company, 'id' | 'created_at'>) =>
   req<{ id: string; company: Company }>('POST', '/api/entities/companies', data)
+
+export const updateCompany = (id: string, data: Partial<Omit<Company, 'id' | 'created_at'>>) =>
+  req<{ id: string; company: Company }>('PATCH', `/api/entities/companies/${id}`, data)
+
+export const deleteCompany = (id: string) => req<{ ok: boolean }>('DELETE', `/api/entities/companies/${id}`)
+
+export async function uploadCompanyProfilePhoto(companyId: string, file: File): Promise<Company> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BE}/api/entities/companies/${companyId}/photo`, { method: 'POST', body: form })
+  const text = await res.text()
+  if (!res.ok) {
+    let msg = text || `Upload failed (${res.status})`
+    try {
+      const j = JSON.parse(text) as { error?: string }
+      if (j.error) msg = j.error
+    } catch {
+      /* keep msg */
+    }
+    throw new Error(msg)
+  }
+  const data = JSON.parse(text) as { company: Company }
+  return data.company
+}
 
 // ── Entities — Relationships ─────────────────────────────────────────────────
 
@@ -92,8 +132,39 @@ export interface CreateRelationshipPayload {
 export const createRelationship = (data: CreateRelationshipPayload) =>
   req<{ id: string }>('POST', '/api/entities/relationships', data)
 
+export const getRelationship = (id: string) =>
+  req<{ id: string; relationship: RelationshipEntity }>('GET', `/api/entities/relationships/${id}`)
+
 export const updateRelationshipLifecycle = (id: string, lifecycle: LifecycleState) =>
-  req<{ id: string }>('PATCH', `/api/entities/relationships/${id}`, { lifecycle })
+  req<{ id: string; relationship: RelationshipEntity }>('PATCH', `/api/entities/relationships/${id}`, { lifecycle })
+
+export interface RelationshipPatch {
+  mentor_id?: string
+  company_id?: string
+  lifecycle?: LifecycleState
+  notes?: string | null
+  wa_group_id?: string | null
+  mentor_phone?: string
+  company_phone?: string
+  match_score?: number | null
+  match_reasoning?: string | null
+  engagement?: Partial<{
+    health_score: number
+  }>
+  comms?: Partial<{
+    last_sentiment: string | null
+    last_message_text: string | null
+    last_message_preview: string | null
+    last_wa_at: string | null
+  }>
+  ai_summary?: string | null
+}
+
+export const patchRelationship = (id: string, data: RelationshipPatch) =>
+  req<{ id: string; relationship: RelationshipEntity }>('PATCH', `/api/entities/relationships/${id}`, data)
+
+export const deleteRelationship = (id: string) =>
+  req<{ ok: boolean }>('DELETE', `/api/entities/relationships/${id}`)
 
 // ── AI ───────────────────────────────────────────────────────────────────────
 
@@ -104,6 +175,7 @@ export interface ExtractedProfile {
   name: string
   industry: string
   stage: string
+  about: string
   problem: string
   goals: string
   size: string
@@ -123,8 +195,49 @@ export async function extractProfileFromDoc(file: File): Promise<{ profile: Extr
   return res.json() as Promise<{ profile: ExtractedProfile; source_file: string }>
 }
 
+export interface ExtractedMentorProfile {
+  name: string
+  bio: string
+  industry: string
+  expertise: string[]
+}
+
+export async function extractMentorFromDoc(files: File[]): Promise<{ profile: ExtractedMentorProfile; source_files: string[] }> {
+  const form = new FormData()
+  for (const file of files) form.append('files', file)
+  const res = await fetch(`${BE}/api/ai/extract-mentor-doc`, { method: 'POST', body: form })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(JSON.parse(text)?.error ?? `Extract failed (${res.status})`)
+  }
+  return res.json() as Promise<{ profile: ExtractedMentorProfile; source_files: string[] }>
+}
+
 export const batchImportCompanies = (rows: CompanyCSVRow[]) =>
   req<{ created: number; ids: string[]; errors: string[] }>('POST', '/api/entities/companies/batch', { rows })
+
+/** Upload one document to company or mentor knowledge base (multipart). */
+export async function uploadKnowledgeDocument(
+  entityType: 'company' | 'mentor',
+  entityId: string,
+  file: File,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BE}/api/knowledge/${entityType}/${entityId}/upload`, { method: 'POST', body: form })
+  const text = await res.text()
+  if (!res.ok) {
+    let msg = text || `Upload failed (${res.status})`
+    try {
+      const j = JSON.parse(text) as { error?: string }
+      if (j.error) msg = j.error
+    } catch {
+      /* keep msg */
+    }
+    return { ok: false, error: `${file.name}: ${msg}` }
+  }
+  return { ok: true }
+}
 
 // ── WAHA ─────────────────────────────────────────────────────────────────────
 
@@ -210,3 +323,12 @@ export const wahaStartSession = () =>
 
 export const wahaRestartSession = () =>
   req<{ ok: boolean }>('POST', '/api/waha/session/restart')
+
+/** Linked-session WhatsApp groups (`…@g.us`). Response is always 200; check `error` if `groups` is empty unexpectedly. */
+export interface WahaGroupChat {
+  id: string
+  name: string
+}
+
+export const wahaListGroupChats = () =>
+  req<{ groups: WahaGroupChat[]; error?: string }>('GET', '/api/waha/group-chats')

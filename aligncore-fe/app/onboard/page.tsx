@@ -1,174 +1,277 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
-import { sendChat, ChatMessage } from '@/lib/api'
-import { MessageSquare, Send, Loader2, Bot, User, Sparkles, CheckCircle2, ArrowRight } from 'lucide-react'
-import Link from 'next/link'
+import { useEffect, useState } from 'react'
+import { db } from '@/lib/firebase'
+import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore'
+import {
+  Mail,
+  CheckCircle,
+  MessageSquare,
+  AlertCircle,
+  Loader2,
+  RefreshCw,
+  Building2,
+  Tag,
+  Bell,
+} from 'lucide-react'
 
-const WELCOME = `Hi! I'm AlignCore AI. I'll help onboard your startup into our ecosystem.
+interface EmailLog {
+  id: string
+  from: string
+  subject: string
+  body_preview: string
+  classification: 'ONBOARDING' | 'QNA' | 'OTHER'
+  action: string
+  reply_sent: boolean
+  wa_notified: boolean
+  company_id: string | null
+  processed_at: string
+  error: string | null
+}
 
-Let's start — what's your company name and what problem are you solving?`
+const BE = process.env.NEXT_PUBLIC_BE_URL ?? 'http://localhost:4000'
 
-export default function OnboardPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [sessionId, setSessionId] = useState<string | undefined>()
-  const [completedCompanyId, setCompletedCompanyId] = useState<string | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
+const CLASSIFICATION_STYLE: Record<string, { label: string; color: string; Icon: typeof Mail }> = {
+  ONBOARDING: { label: 'Onboarding', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', Icon: Building2 },
+  QNA: { label: 'Q&A', color: 'text-violet-400 bg-violet-500/10 border-violet-500/20', Icon: MessageSquare },
+  OTHER: { label: 'Other', color: 'text-slate-400 bg-slate-700/40 border-slate-700/50', Icon: Tag },
+}
+
+function ClassificationBadge({ type }: { type: string }) {
+  const s = CLASSIFICATION_STYLE[type] ?? CLASSIFICATION_STYLE.OTHER
+  const Icon = s.Icon
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border ${s.color}`}>
+      <Icon className="w-3 h-3" />
+      {s.label}
+    </span>
+  )
+}
+
+export default function GmailInboxPage() {
+  const [logs, setLogs] = useState<EmailLog[]>([])
+  const [logsLoading, setLogsLoading] = useState(true)
+  const [processing, setProcessing] = useState(false)
+  const [processResult, setProcessResult] = useState<{ processed: number } | null>(null)
+  const [processError, setProcessError] = useState<string | null>(null)
+  const [watching, setWatching] = useState(false)
+  const [watchResult, setWatchResult] = useState<string | null>(null)
+  const [watchError, setWatchError] = useState<string | null>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+    const q = query(
+      collection(db, 'email_logs'),
+      orderBy('processed_at', 'desc'),
+      limit(50),
+    )
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() } as EmailLog)))
+        setLogsLoading(false)
+      },
+      () => setLogsLoading(false),
+    )
+    return unsub
+  }, [])
 
-  async function handleSend() {
-    const text = input.trim()
-    if (!text || loading) return
-
-    const userMsg: ChatMessage = { role: 'user', text }
-    const nextMessages = [...messages, userMsg]
-    setMessages(nextMessages)
-    setInput('')
-    setLoading(true)
-
+  async function handleWatch() {
+    setWatching(true)
+    setWatchResult(null)
+    setWatchError(null)
     try {
-      const data = await sendChat(nextMessages, sessionId)
-      setSessionId(data.sessionId)
-      if (data.is_complete && data.company_id) {
-        setCompletedCompanyId(data.company_id)
-      }
-      setMessages([...nextMessages, { role: 'model', text: data.reply }])
-    } catch {
-      setMessages([...nextMessages, { role: 'model', text: 'Sorry, I had trouble responding. Please try again.' }])
+      const res = await fetch(`${BE}/api/gmail/watch`, { method: 'POST' })
+      const data = (await res.json()) as { ok?: boolean; historyId?: string; expiration?: string; error?: string }
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      const exp = data.expiration ? new Date(Number(data.expiration)).toLocaleString() : ''
+      setWatchResult(`Webhook registered${exp ? ` — expires ${exp}` : ''}.`)
+    } catch (e) {
+      setWatchError((e as Error).message)
     } finally {
-      setLoading(false)
-      inputRef.current?.focus()
+      setWatching(false)
     }
   }
 
-  function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
+  async function handleProcess() {
+    setProcessing(true)
+    setProcessResult(null)
+    setProcessError(null)
+    try {
+      const res = await fetch(`${BE}/api/gmail/process`, { method: 'POST' })
+      const data = (await res.json()) as { processed: number; error?: string }
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      setProcessResult({ processed: data.processed })
+    } catch (e) {
+      setProcessError((e as Error).message)
+    } finally {
+      setProcessing(false)
     }
   }
 
-  const allMessages: Array<ChatMessage | { role: 'welcome'; text: string }> = [
-    { role: 'welcome', text: WELCOME },
-    ...messages,
-  ]
+  const stats = {
+    total: logs.length,
+    onboarding: logs.filter((l) => l.classification === 'ONBOARDING').length,
+    qna: logs.filter((l) => l.classification === 'QNA').length,
+    errors: logs.filter((l) => !!l.error).length,
+  }
 
   return (
-    <div className="max-w-2xl mx-auto flex flex-col" style={{ height: 'calc(100vh - 64px)' }}>
+    <div className="space-y-6">
       {/* Header */}
-      <div className="mb-4 flex-shrink-0">
-        <h1 className="text-2xl font-bold text-slate-100 flex items-center gap-2">
-          <Sparkles className="w-6 h-6 text-indigo-400" />
-          Onboard
-        </h1>
-        <p className="text-sm text-slate-500 mt-0.5">AI-guided startup onboarding</p>
-      </div>
-
-      {/* Success banner */}
-      {completedCompanyId && (
-        <div className="flex items-center gap-3 bg-emerald-950/50 border border-emerald-500/30 rounded-xl px-4 py-3 mb-4 flex-shrink-0">
-          <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-emerald-300">Onboarding complete!</p>
-            <p className="text-xs text-emerald-600">Company profile created and saved to the ecosystem.</p>
-          </div>
-          <Link
-            href={`/companies/${completedCompanyId}`}
-            className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 font-medium flex-shrink-0 transition-colors"
-          >
-            View profile <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100 flex items-center gap-2">
+            <Mail className="w-6 h-6 text-violet-400" />
+            Gmail AI Inbox
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Classifies incoming emails, extracts company profiles, and auto-replies.
+          </p>
         </div>
-      )}
-
-      {/* Chat window */}
-      <div className="flex-1 bg-slate-800/40 border border-slate-700/50 rounded-2xl overflow-hidden flex flex-col min-h-0">
-        <div className="flex-1 overflow-y-auto px-4 py-5 space-y-4">
-          {allMessages.map((msg, i) => {
-            const isModel = msg.role === 'model' || msg.role === 'welcome'
-            return (
-              <div key={i} className={`flex items-start gap-3 ${isModel ? '' : 'flex-row-reverse'}`}>
-                {/* Avatar */}
-                <div
-                  className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center ${
-                    isModel ? 'bg-indigo-600' : 'bg-slate-700'
-                  }`}
-                >
-                  {isModel ? (
-                    <Bot className="w-3.5 h-3.5 text-white" />
-                  ) : (
-                    <User className="w-3.5 h-3.5 text-slate-300" />
-                  )}
-                </div>
-                {/* Bubble */}
-                <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                    isModel
-                      ? 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700/50'
-                      : 'bg-indigo-600 text-white rounded-tr-none'
-                  }`}
-                >
-                  {msg.text.split('\n').map((line, j) => (
-                    <p key={j} className={j > 0 ? 'mt-2' : ''}>
-                      {line}
-                    </p>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-
-          {loading && (
-            <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center">
-                <Bot className="w-3.5 h-3.5 text-white" />
-              </div>
-              <div className="bg-slate-800 border border-slate-700/50 rounded-2xl rounded-tl-none px-4 py-3">
-                <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
-              </div>
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-
-        {/* Input */}
-        <div className="flex-shrink-0 border-t border-slate-700/50 px-4 py-3 flex items-end gap-3">
-          <div className="flex-1 relative">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKey}
-              placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
-              rows={1}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-colors resize-none"
-              style={{ maxHeight: 120 }}
-            />
-          </div>
+        <div className="flex items-center gap-2">
           <button
-            onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className="flex-shrink-0 w-9 h-9 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-xl transition-colors"
+            onClick={() => void handleWatch()}
+            disabled={watching}
+            title="Register Pub/Sub webhook — re-run every 7 days"
+            className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 px-3 py-2 text-sm font-medium text-slate-300 transition-colors"
           >
-            {loading ? (
+            {watching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bell className="w-4 h-4" />}
+            {watching ? 'Registering…' : 'Register Webhook'}
+          </button>
+          <button
+            onClick={() => void handleProcess()}
+            disabled={processing}
+            className="flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 px-4 py-2 text-sm font-medium text-white transition-colors"
+          >
+            {processing ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
-              <Send className="w-4 h-4" />
+              <RefreshCw className="w-4 h-4" />
             )}
+            {processing ? 'Processing…' : 'Check Inbox'}
           </button>
         </div>
       </div>
 
-      <p className="text-center text-[10px] text-slate-700 mt-2">
-        <MessageSquare className="w-3 h-3 inline mr-1" />
-        Powered by Gemini · Session: {sessionId ? sessionId.slice(0, 8) + '…' : 'new'}
-      </p>
+      {/* Feedback banners */}
+      {watchResult && (
+        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-400">
+          {watchResult}
+        </div>
+      )}
+      {watchError && (
+        <div className="rounded-xl bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-400">
+          Webhook: {watchError}
+        </div>
+      )}
+      {processResult && (
+        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-400">
+          {processResult.processed === 0
+            ? 'No new emails to process — inbox is up to date.'
+            : `Processed ${processResult.processed} new email${processResult.processed === 1 ? '' : 's'}.`}
+        </div>
+      )}
+      {processError && (
+        <div className="rounded-xl bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-400">
+          {processError}
+        </div>
+      )}
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[
+          { label: 'Total Processed', value: stats.total, color: 'text-slate-200' },
+          { label: 'Onboarding', value: stats.onboarding, color: 'text-emerald-400' },
+          { label: 'Q&A', value: stats.qna, color: 'text-violet-400' },
+          { label: 'Errors', value: stats.errors, color: 'text-rose-400' },
+        ].map((s) => (
+          <div
+            key={s.label}
+            className="rounded-xl bg-slate-800/50 border border-slate-700/50 p-3"
+          >
+            <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Log list */}
+      <div>
+        <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-3">
+          Processed Emails
+        </h2>
+
+        {logsLoading ? (
+          <div className="flex items-center justify-center gap-2 text-slate-500 py-12">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+          </div>
+        ) : logs.length === 0 ? (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-10 text-center text-slate-600 text-sm">
+            No emails processed yet. Click &ldquo;Check Inbox&rdquo; to start.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {logs.map((log) => (
+              <div
+                key={log.id}
+                className="rounded-xl bg-slate-800/50 border border-slate-700/50 p-4 space-y-2"
+              >
+                {/* Top row */}
+                <div className="flex items-start gap-3 justify-between flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                    <ClassificationBadge type={log.classification} />
+                    <span className="text-sm font-medium text-slate-200 truncate">
+                      {log.subject || '(no subject)'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    {log.reply_sent && (
+                      <span className="flex items-center gap-1 text-xs text-emerald-400">
+                        <CheckCircle className="w-3 h-3" /> replied
+                      </span>
+                    )}
+                    {log.wa_notified && (
+                      <span className="flex items-center gap-1 text-xs text-violet-400">
+                        <MessageSquare className="w-3 h-3" /> WA notified
+                      </span>
+                    )}
+                    {log.error && (
+                      <span className="flex items-center gap-1 text-xs text-rose-400">
+                        <AlertCircle className="w-3 h-3" /> error
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* From */}
+                <p className="text-xs text-slate-500 truncate">{log.from}</p>
+
+                {/* Body preview */}
+                {log.body_preview && (
+                  <p className="text-xs text-slate-400 leading-relaxed line-clamp-2">
+                    {log.body_preview}
+                  </p>
+                )}
+
+                {/* Action + timestamp */}
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <p className="text-xs text-slate-600">{log.action}</p>
+                  <p className="text-xs text-slate-600">
+                    {new Date(log.processed_at).toLocaleString()}
+                  </p>
+                </div>
+
+                {/* Error detail */}
+                {log.error && (
+                  <p className="text-xs text-rose-400 bg-rose-500/5 rounded-lg px-3 py-2 leading-relaxed">
+                    {log.error}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

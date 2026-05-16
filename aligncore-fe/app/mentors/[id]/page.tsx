@@ -5,7 +5,6 @@ import { useParams, useRouter } from 'next/navigation'
 import { db } from '@/lib/firebase'
 import {
   doc,
-  getDoc,
   collection,
   query,
   where,
@@ -14,8 +13,11 @@ import {
 } from 'firebase/firestore'
 import type { Mentor, RelationshipEntity, HealthHistory } from '@/lib/types'
 import RelationshipCard from '@/components/RelationshipCard'
-import { Users, ArrowLeft, Briefcase, CheckCircle2, Loader2 } from 'lucide-react'
+import { MentorPhotoEditor } from '@/components/MentorPhotoEditor'
+import { ArrowLeft, Briefcase, CheckCircle2, Loader2, Pencil, FileText } from 'lucide-react'
 import Link from 'next/link'
+import KnowledgeDocs from '@/components/KnowledgeDocs'
+import { MentorProfileModal } from '@/components/MentorProfileModal'
 
 export default function MentorDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -26,18 +28,23 @@ export default function MentorDetailPage() {
   const [historyMap, setHistoryMap] = useState<Record<string, HealthHistory[]>>({})
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editNonce, setEditNonce] = useState(0)
 
   useEffect(() => {
     if (!id) return
-    getDoc(doc(db, 'mentors', id)).then((snap) => {
+    const unsub = onSnapshot(doc(db, 'mentors', id), (snap) => {
       if (!snap.exists()) {
         setNotFound(true)
+        setMentor(null)
         setLoading(false)
         return
       }
       setMentor({ id: snap.id, ...snap.data() } as Mentor)
+      setNotFound(false)
       setLoading(false)
     })
+    return unsub
   }, [id])
 
   useEffect(() => {
@@ -89,6 +96,9 @@ export default function MentorDetailPage() {
         relationships.length
       : null
 
+  const knowledgeCount = mentor.knowledge_doc_count ?? 0
+  const hasKnowledgeDocs = knowledgeCount > 0
+
   return (
     <div className="space-y-8">
       {/* Back + Header */}
@@ -99,9 +109,9 @@ export default function MentorDetailPage() {
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Back to Mentors
         </Link>
-        <div className="flex items-start gap-4">
-          <div className="flex items-center justify-center w-14 h-14 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex-shrink-0">
-            <Users className="w-7 h-7 text-indigo-400" />
+        <div className="flex flex-col sm:flex-row gap-6 sm:gap-8 items-start">
+          <div className="rounded-2xl border border-slate-700/50 bg-slate-800/40 p-4 w-full sm:w-auto sm:min-w-[280px]">
+            <MentorPhotoEditor mentorId={mentor.id} photoUrl={mentor.photo_url} onMentorUpdated={setMentor} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
@@ -111,6 +121,17 @@ export default function MentorDetailPage() {
               >
                 {mentor.available ? 'Available' : 'Busy'}
               </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditNonce((n) => n + 1)
+                  setEditOpen(true)
+                }}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-400 hover:text-indigo-300 px-2.5 py-1 rounded-lg border border-indigo-500/25 hover:bg-indigo-500/10 transition-colors"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                Edit profile
+              </button>
             </div>
             {mentor.industry && (
               <p className="flex items-center gap-1 text-sm text-indigo-400 mt-1">
@@ -122,7 +143,7 @@ export default function MentorDetailPage() {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-3 text-center">
           <p className="text-2xl font-bold text-slate-100">{relationships.length}</p>
           <p className="text-xs text-slate-500 mt-0.5">Companies Mentored</p>
@@ -132,12 +153,6 @@ export default function MentorDetailPage() {
             {avgHealth !== null ? `${Math.round(avgHealth * 100)}` : '—'}
           </p>
           <p className="text-xs text-slate-500 mt-0.5">Avg Health Score</p>
-        </div>
-        <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-3 text-center">
-          <p className="text-2xl font-bold text-slate-100">
-            {relationships.reduce((s, r) => s + (r.engagement?.sessions_completed ?? 0), 0)}
-          </p>
-          <p className="text-xs text-slate-500 mt-0.5">Sessions Completed</p>
         </div>
       </div>
 
@@ -163,6 +178,33 @@ export default function MentorDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Knowledge Documents */}
+      <div className="space-y-2">
+        <div
+          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium ${
+            hasKnowledgeDocs
+              ? 'border-emerald-500/25 bg-emerald-500/5 text-emerald-400'
+              : 'border-slate-700/60 bg-slate-900/40 text-slate-500'
+          }`}
+        >
+          <FileText className="w-4 h-4 shrink-0 opacity-90" aria-hidden />
+          <span>
+            {hasKnowledgeDocs
+              ? `${knowledgeCount} knowledge document${knowledgeCount === 1 ? '' : 's'} uploaded`
+              : 'No knowledge documents yet — upload CVs or decks below'}
+          </span>
+        </div>
+        <KnowledgeDocs entityType="mentor" entityId={id as string} />
+      </div>
+
+      <MentorProfileModal
+        key={editNonce}
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        mentor={mentor}
+        onUpdated={(m) => setMentor(m)}
+      />
 
       {/* Portfolio — mentored companies */}
       <div>

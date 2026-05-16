@@ -8,43 +8,7 @@ dotenv.config()
 import { getApp } from 'firebase-admin/app'
 import { adminDb } from '../lib/firebase-admin'
 
-const DEMO_RE_ID = process.env.DEMO_RE_ID ?? 'demo-re-001'
-
 const now = new Date().toISOString()
-
-const DEMO_RE = {
-  mentor_id: 'mentor-001',
-  company_id: 'company-001',
-  mentor_name: 'Dr. Aisha Rahman',
-  company_name: 'NexGen Robotics',
-  lifecycle: 'ACTIVE',
-  engagement: {
-    health_score: 0.72,
-    sessions_completed: 4,
-    next_session: null,
-  },
-  comms: {
-    last_sentiment: 'NEUTRAL',
-    last_message_text: 'Relationship initialized.',
-    last_message_preview: 'Relationship initialized.',
-    last_wa_at: null,
-  },
-  ai_summary: null,
-  ai_summary_updated_at: null,
-  match_score: 0.91,
-  match_reasoning:
-    'Strong FinTech and fundraising background aligns with NexGen Robotics scaling hardware and raising Series A.',
-  created_at: now,
-  updated_at: now,
-}
-
-const DEMO_RE_HISTORY = [
-  { score: 0.60, sentiment: 'NEUTRAL', timestamp: new Date(Date.now() - 7 * 86400000).toISOString() },
-  { score: 0.65, sentiment: 'POSITIVE', timestamp: new Date(Date.now() - 5 * 86400000).toISOString() },
-  { score: 0.70, sentiment: 'POSITIVE', timestamp: new Date(Date.now() - 3 * 86400000).toISOString() },
-  { score: 0.68, sentiment: 'NEUTRAL', timestamp: new Date(Date.now() - 1 * 86400000).toISOString() },
-  { score: 0.72, sentiment: 'NEUTRAL', timestamp: now },
-]
 
 const COMPANIES = [
   {
@@ -52,6 +16,8 @@ const COMPANIES = [
     name: 'NexGen Robotics',
     industry: 'Deep Tech',
     stage: 'Seed',
+    about:
+      'Develops modular robotic arms and control software for small factories and warehouses that cannot afford legacy automation.',
     problem: 'Building affordable industrial robotics for SMEs in Southeast Asia.',
     goals: 'Raise Series A and expand to 3 new markets by end of year.',
     size: '12',
@@ -62,6 +28,8 @@ const COMPANIES = [
     name: 'MediTrack',
     industry: 'HealthTech',
     stage: 'Pre-seed',
+    about:
+      'Cloud-based clinic workflow platform focused on offline-first charts and inventory for rural healthcare providers.',
     problem: 'Digitizing patient records for rural clinics in Malaysia.',
     goals: 'Achieve product-market fit and onboard 50 clinics.',
     size: '5',
@@ -72,6 +40,8 @@ const COMPANIES = [
     name: 'FinFlow',
     industry: 'FinTech',
     stage: 'Seed',
+    about:
+      'B2B payments stack offering instant settlement APIs for SME marketplaces and distributors across Southeast Asia.',
     problem: 'Providing instant B2B payment solutions for SMEs across SEA.',
     goals: 'Get regulatory approval and grow to $1M ARR.',
     size: '8',
@@ -138,17 +108,7 @@ async function seed() {
   const dbId = process.env.FIRESTORE_DATABASE_ID?.trim() || '(default)'
   console.log(`   Project: ${projectId}`)
   console.log(`   Database: ${dbId}`)
-
-  // Relationships
-  await adminDb.collection('relationships').doc(DEMO_RE_ID).set(DEMO_RE)
-  console.log(`  OK relationships/${DEMO_RE_ID}`)
-
-  // Health history subcollection
-  const histRef = adminDb.collection('relationships').doc(DEMO_RE_ID).collection('history')
-  for (const point of DEMO_RE_HISTORY) {
-    await histRef.add(point)
-  }
-  console.log(`  OK relationships/${DEMO_RE_ID}/history (${DEMO_RE_HISTORY.length} points)`)
+  console.log('  (Relationships are created in the app; seed only loads mentors/companies.)')
 
   // Companies
   for (const company of COMPANIES) {
