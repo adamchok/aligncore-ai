@@ -8,6 +8,9 @@ interface CompanyProfile {
   name?: string
   industry?: string
   stage?: string
+  problem?: string
+  goals?: string
+  /** legacy alias */
   challenge?: string
   mentor_expertise?: string
   size?: string
@@ -18,13 +21,32 @@ interface MentorDoc {
   name: string
   expertise: string[]
   bio: string
-  industries: string[]
+  industries?: string[]
+  /** optional curated single label */
+  industry?: string
+  available?: boolean
 }
 
-interface RankedMentor extends MentorDoc {
+interface MatchResult {
+  id: string
+  name: string
+  industry: string
+  expertise: string[]
+  bio: string
   ai_match_score: number
   reasoning: string
   rank: number
+}
+
+function mentorIndustryLabel(m: MentorDoc): string {
+  if (m.industry?.trim()) return m.industry.trim()
+  const first = m.industries?.filter(Boolean)?.[0]
+  if (first) return first
+  return ''
+}
+
+function problemFrom(profile: CompanyProfile): string | undefined {
+  return profile.problem ?? profile.challenge
 }
 
 matchRouter.post('/', async (req, res) => {
@@ -35,28 +57,39 @@ matchRouter.post('/', async (req, res) => {
       return res.status(400).json({ error: 'company_profile is required' })
     }
 
-    // ── Embed the company profile ────────────────────────────────────────
+    if (!company_profile.name?.trim()) {
+      return res.status(400).json({ error: 'company_profile.name is required' })
+    }
+
+    const problem = problemFrom(company_profile)
+    const goals = company_profile.goals
+
     const profileText = [
       company_profile.name,
       company_profile.industry,
       company_profile.stage,
-      company_profile.challenge,
+      problem,
+      goals,
       company_profile.mentor_expertise,
+      company_profile.size,
     ]
       .filter(Boolean)
       .join('. ')
 
     const profileEmbedding = await embedText(profileText)
 
-    // ── Fetch all mentors from Firestore ─────────────────────────────────
-    const mentorsSnap = await adminDb.collection('mentors').get()
+    let mentorsSnap = await adminDb.collection('mentors').where('available', '==', true).get()
+
+    if (mentorsSnap.empty) {
+      mentorsSnap = await adminDb.collection('mentors').get()
+    }
+
     const mentors = mentorsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as MentorDoc))
 
     if (mentors.length === 0) {
       return res.json({ matches: [] })
     }
 
-    // ── Embed each mentor & compute cosine similarity ────────────────────
     const scored = await Promise.all(
       mentors.map(async (mentor) => {
         const mentorText = [
@@ -64,7 +97,10 @@ matchRouter.post('/', async (req, res) => {
           mentor.bio,
           ...(mentor.expertise ?? []),
           ...(mentor.industries ?? []),
-        ].join('. ')
+          mentor.industry,
+        ]
+          .filter(Boolean)
+          .join('. ')
 
         const mentorEmbedding = await embedText(mentorText)
         const score = cosineSimilarity(profileEmbedding, mentorEmbedding)
@@ -72,13 +108,11 @@ matchRouter.post('/', async (req, res) => {
       })
     )
 
-    // Top 3 by cosine score
     const top3 = scored
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
       .map(({ mentor, score }) => ({ mentor, score }))
 
-    // ── Gemini re-ranking + reasoning ───────────────────────────────────
     const rerankPrompt = `
 You are an expert startup mentor matching system for AlignCore AI.
 
@@ -89,9 +123,9 @@ Top 3 mentor candidates (pre-ranked by vector similarity):
 ${top3
   .map(
     ({ mentor, score }, i) =>
-      `${i + 1}. ${mentor.name} (cosine: ${score.toFixed(3)})
+      `${i + 1}. ${mentor.name} (${mentorIndustryLabel(mentor)}) cosine=${score.toFixed(3)}
+   id: ${mentor.id}
    Expertise: ${(mentor.expertise ?? []).join(', ')}
-   Industries: ${(mentor.industries ?? []).join(', ')}
    Bio: ${mentor.bio}`
   )
   .join('\n\n')}
@@ -110,10 +144,9 @@ Reply with JSON only (no markdown):
       []
 
     try {
-      const clean = raw.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
+      const clean = raw.replace(/```json?\n?/gi, '').replace(/```/g, '').trim()
       rankings = JSON.parse(clean)
     } catch {
-      // Fallback: use cosine scores directly
       rankings = top3.map(({ mentor, score }, i) => ({
         id: mentor.id,
         rank: i + 1,
@@ -122,21 +155,27 @@ Reply with JSON only (no markdown):
       }))
     }
 
-    // Merge rankings with mentor data
-    const matches: RankedMentor[] = rankings
+    const merged: MatchResult[] = rankings
       .map((r) => {
         const found = top3.find(({ mentor }) => mentor.id === r.id)
         if (!found) return null
+        const m = found.mentor
         return {
-          ...found.mentor,
+          id: m.id,
+          name: m.name,
+          industry: mentorIndustryLabel(m),
+          expertise: m.expertise ?? [],
+          bio: m.bio,
           ai_match_score: r.ai_match_score,
           reasoning: r.reasoning,
           rank: r.rank,
-        } as RankedMentor
+        }
       })
-      .filter(Boolean) as RankedMentor[]
+      .filter(Boolean) as MatchResult[]
 
-    return res.json({ matches })
+    merged.sort((a, b) => a.rank - b.rank)
+
+    return res.json({ matches: merged })
   } catch (err) {
     console.error('[match] error:', err)
     return res.status(500).json({ error: String(err) })

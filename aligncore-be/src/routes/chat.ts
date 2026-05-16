@@ -4,62 +4,83 @@ import { genai, MODELS } from '../lib/gemini'
 
 export const chatRouter = Router()
 
-const SYSTEM_PROMPT = `You are AlignCore AI's friendly onboarding assistant.
-Your goal is to collect the following 6 fields from the user in a natural conversation:
-1. company_name — the company's name
-2. industry — e.g. FinTech, HealthTech, EdTech, SaaS, Manufacturing, etc.
-3. company_stage — Idea / Pre-seed / Seed / Series A / Growth
-4. company_size — number of employees (Small 1-50, Medium 51-500, Large 500+)
-5. main_challenge — the biggest challenge they are facing right now
-6. desired_mentor_expertise — what kind of mentor expertise would help most
+const SYSTEM_PROMPT = `You are AlignCore AI's onboarding assistant. Collect a company profile through friendly chat — not a form.
+
+Collect these 6 fields naturally, one at a time:
+1. name — company name
+2. industry — sector (e.g. FinTech, Deep Tech, HealthTech, SaaS)
+3. stage — Idea / Pre-seed / Seed / Series A / Growth
+4. problem — main challenge or problem they're solving
+5. goals — what they want from mentorship
+6. whatsapp — founder's WhatsApp number (for check-ins)
 
 Rules:
-- Ask one question at a time. Keep responses concise and warm.
-- If the user provides multiple fields at once, acknowledge all and move on.
-- When all 6 fields are collected, output a structured profile in this exact format on a new line:
-  <PROFILE>{"company_name":"...","industry":"...","company_stage":"...","company_size":"...","main_challenge":"...","desired_mentor_expertise":"..."}</PROFILE>
-- Then thank the user and tell them you are finding the best mentors for them.
-- Do NOT output the PROFILE tag until you have confirmed all 6 fields.`
+- Be warm and concise. Ask one question at a time.
+- If the user volunteers several fields, acknowledge all and continue.
+- Only when all 6 are confirmed, output this exact tagged block once (no prose inside the tags):
+  <PROFILE>{"name":"...","industry":"...","stage":"...","problem":"...","goals":"...","whatsapp":"..."}</PROFILE>
+- After the closing tag in the same reply, thank them briefly and mention they can use Match to find top mentors.
 
-interface ChatMessage {
-  role: 'user' | 'model'
-  parts: Array<{ text: string }>
+Before completion: conversational text only; never output PROFILE or partial JSON outside the tags.`
+
+type ChatRole = 'user' | 'model'
+
+interface IncomingChatMessage {
+  role: ChatRole
+  parts?: Array<{ text: string }>
+  /** API contract shape from MVP guide */
+  text?: string
+}
+
+function toGeminiParts(m: IncomingChatMessage): Array<{ text: string }> {
+  if (m.parts?.length) return m.parts
+  if (typeof m.text === 'string' && m.text.length > 0) return [{ text: m.text }]
+  return []
 }
 
 chatRouter.post('/', async (req, res) => {
   try {
     const { messages, session_id } = req.body as {
-      messages: ChatMessage[]
+      messages: IncomingChatMessage[]
       session_id: string
     }
 
-    if (!messages || !session_id) {
-      return res.status(400).json({ error: 'messages and session_id are required' })
+    if (!messages?.length || !session_id) {
+      return res.status(400).json({ error: 'messages (non-empty) and session_id are required' })
     }
 
-    // ── Call Gemini with full history ────────────────────────────────────
+    for (let i = 0; i < messages.length; i++) {
+      if (toGeminiParts(messages[i]).length === 0) {
+        return res
+          .status(400)
+          .json({ error: `messages[${i}] must include text or parts with non-empty text` })
+      }
+    }
+
+    const contents = messages.map((m) => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: toGeminiParts(m),
+    }))
+
     const result = await genai.models.generateContent({
       model: MODELS.flash,
-      contents: [
-        { role: 'user', parts: [{ text: SYSTEM_PROMPT }] },
-        { role: 'model', parts: [{ text: "Hi! I'm AlignCore AI. Let's get started — what's your company name?" }] },
-        ...messages,
-      ],
+      contents,
+      config: {
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      },
     })
 
-    const reply = result.text ?? ''
+    const replyRaw = result.text ?? ''
 
-    // ── Detect completed profile ─────────────────────────────────────────
-    const profileMatch = reply.match(/<PROFILE>([\s\S]*?)<\/PROFILE>/)
+    const profileMatch = replyRaw.match(/<PROFILE>([\s\S]*?)<\/PROFILE>/)
     let profileExtracted: Record<string, string> | null = null
     let isComplete = false
 
     if (profileMatch) {
       try {
-        profileExtracted = JSON.parse(profileMatch[1]) as Record<string, string>
+        profileExtracted = JSON.parse(profileMatch[1].trim()) as Record<string, string>
         isComplete = true
 
-        // Persist to Firestore
         await adminDb.collection('onboarding_sessions').doc(session_id).set({
           ...profileExtracted,
           session_id,
@@ -71,6 +92,8 @@ chatRouter.post('/', async (req, res) => {
         console.warn('[chat] Failed to parse PROFILE JSON')
       }
     }
+
+    const reply = replyRaw.replace(/<PROFILE>[\s\S]*?<\/PROFILE>\s*/, '').trim()
 
     return res.json({
       reply,

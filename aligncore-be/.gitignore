@@ -2,3 +2,6 @@ node_modules/
 dist/
 .env
 *.js.map
+
+# Service account JSON (use GOOGLE_APPLICATION_CREDENTIALS — see .env.example)
+credentials/

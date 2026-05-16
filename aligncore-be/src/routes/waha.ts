@@ -19,14 +19,21 @@ wahaRouter.post('/webhook', async (req, res) => {
   try {
     const body = req.body as WAHAPayload
 
-    // Only process inbound message events
-    if (body.event !== 'message' || !body.payload?.body) {
+    if (body.event !== 'message') {
       return res.json({ ok: true, skipped: true })
     }
 
-    const messageText = body.payload.body
+    const messageText = body.payload?.body ?? ''
+    const fromNumber = body.payload?.from ?? ''
 
-    // ── Sentiment Analysis via Gemini ─────────────────────────────────────
+    if (!messageText.trim()) {
+      return res.json({ ok: true, skipped: 'empty message' })
+    }
+
+    if (fromNumber) {
+      console.log(`[waha] inbound from ${fromNumber}`)
+    }
+
     const sentimentPrompt = `
 Analyze the sentiment of this WhatsApp message from a mentee about their mentor relationship.
 Reply with JSON only, no markdown:
@@ -46,8 +53,7 @@ Message: "${messageText.replace(/"/g, "'")}"
     let delta = 0
 
     try {
-      // Strip possible markdown fences
-      const clean = raw.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
+      const clean = raw.replace(/```json?\n?/gi, '').replace(/```/g, '').trim()
       const parsed = JSON.parse(clean) as { sentiment: string; health_score_delta: number }
       sentiment = parsed.sentiment ?? 'NEUTRAL'
       delta = parsed.health_score_delta ?? 0
@@ -55,17 +61,25 @@ Message: "${messageText.replace(/"/g, "'")}"
       console.warn('[waha] Failed to parse Gemini sentiment response, defaulting to NEUTRAL')
     }
 
-    // ── Update Firestore RE ──────────────────────────────────────────────
     const reRef = adminDb.collection('relationships').doc(DEMO_RE_ID)
     const snap = await reRef.get()
-    const current = snap.data()
-    const currentHealth: number = current?.engagement?.health_score ?? 0.5
 
+    if (!snap.exists) {
+      console.warn('[waha] Relationship doc missing:', DEMO_RE_ID)
+      return res.status(404).json({ ok: false, error: 'RE not found' })
+    }
+
+    const currentHealth: number = snap.data()?.engagement?.health_score ?? 0.5
     const newHealth = Math.min(1, Math.max(0, currentHealth + delta))
+
+    const preview =
+      messageText.length <= 120 ? messageText : `${messageText.slice(0, 117)}...`
+    const textField = messageText.length <= 200 ? messageText : `${messageText.slice(0, 197)}...`
 
     await reRef.update({
       'comms.last_sentiment': sentiment,
-      'comms.last_message_preview': messageText.slice(0, 120),
+      'comms.last_message_text': textField,
+      'comms.last_message_preview': preview,
       'comms.last_wa_at': new Date().toISOString(),
       'engagement.health_score': newHealth,
       updated_at: new Date().toISOString(),

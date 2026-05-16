@@ -12,7 +12,7 @@ This guide is written for **two developers working in parallel** with zero merge
 
 ```
 aligncore-ai/
-├── aligncore-be/    ← BE developer's domain (Express, TypeScript)
+├── aligncore-be/    ← BE developer's domain (Express, TypeScript, pnpm)
 ├── aligncore-fe/    ← FE developer's domain (Next.js 16, React 19, TypeScript, Tailwind 4)
 └── doc/             ← This guide
 ```
@@ -113,12 +113,12 @@ Both devs need to know the Firestore document shape.
 cd aligncore-be
 
 # Init project
-npm init -y
-npm install express cors dotenv firebase-admin @google/genai @google-cloud/vertexai axios
-npm install -D typescript ts-node @types/node @types/express @types/cors nodemon
+pnpm init --bare --init-package-manager
+pnpm add express cors dotenv firebase-admin @google/genai
+pnpm add -D typescript ts-node ts-node-dev @types/node @types/express @types/cors
 
 # Init TypeScript
-npx tsc --init
+pnpm exec tsc --init
 ```
 
 Update `tsconfig.json`:
@@ -144,35 +144,43 @@ Create `package.json` scripts:
 ```json
 {
   "scripts": {
-    "dev": "nodemon --exec ts-node src/index.ts",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "seed": "ts-node src/scripts/seed.ts"
   }
 }
 ```
 
-Create `.env` in `aligncore-be/`:
+Create `.env` in `aligncore-be/` (copy from `.env.example`):
 ```bash
 PORT=4000
 
-# Firebase Admin
-FIREBASE_PROJECT_ID=your_project_id
-FIREBASE_CLIENT_EMAIL=firebase-adminsdk@your_project.iam.gserviceaccount.com
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+# CORS — browser origin for aligncore-fe
+FE_ORIGIN=http://localhost:3001
+
+# Firebase Admin SDK — recommended approach (service account JSON file)
+# 1. mkdir aligncore-be/credentials   (gitignored)
+# 2. Firebase Console → Project settings → Service accounts → Generate new private key
+# 3. Save as: aligncore-be/credentials/firebase-service-account.json
+GOOGLE_APPLICATION_CREDENTIALS=./credentials/firebase-service-account.json
+# If you use a named Firestore DB (not "(default)"), set its Database ID here:
+FIRESTORE_DATABASE_ID=aligncore-db
+
+# Fallback inline creds (comment out the two lines above if using these)
+# FIREBASE_PROJECT_ID=your-project-id
+# FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project-id.iam.gserviceaccount.com
+# FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nYOUR_KEY\n-----END PRIVATE KEY-----\n"
 
 # Gemini
 GEMINI_API_KEY=your_gemini_api_key
 
-# Vertex AI
-GOOGLE_CLOUD_PROJECT=your_project_id
-GOOGLE_CLOUD_LOCATION=us-central1
-
 # WAHA
 WAHA_URL=http://localhost:3000
-WAHA_API_KEY=your_waha_api_key
+WAHA_SESSION=aligncore-demo
 
-# CORS — FE origin
-FE_ORIGIN=http://localhost:3001
+# Demo
+DEMO_RE_ID=demo-re-001
 ```
 
 > **Note:** `.env` must be in `.gitignore`. Never commit secrets.
@@ -183,6 +191,7 @@ node_modules/
 dist/
 .env
 *.js.map
+credentials/
 ```
 
 ### BE Step 1: Express Server Entry Point (Hour 1)
@@ -229,23 +238,94 @@ Create `src/lib/firebase-admin.ts`:
 
 ```typescript
 // aligncore-be/src/lib/firebase-admin.ts
-import { initializeApp, getApps, cert } from 'firebase-admin/app'
+import fs from 'fs'
+import path from 'path'
+import { applicationDefault, cert, getApps, initializeApp } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 
-const adminApp =
-  getApps().find(a => a.name === 'admin') ??
-  initializeApp(
-    {
-      credential: cert({
-        projectId: process.env.FIREBASE_PROJECT_ID!,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, '\n'),
-      }),
-    },
-    'admin'
-  )
+function resolveGoogleApplicationCredentials(): void {
+  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()
+  if (!gac) return
+  const abs = path.isAbsolute(gac) ? gac : path.resolve(process.cwd(), gac)
+  if (!fs.existsSync(abs)) {
+    throw new Error(`[firebase-admin] GOOGLE_APPLICATION_CREDENTIALS not found:\n  ${abs}`)
+  }
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = abs
+}
 
-export const adminDb = getFirestore(adminApp)
+resolveGoogleApplicationCredentials()
+
+const hasJsonFile = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim())
+
+function credential() {
+  if (hasJsonFile) return applicationDefault()
+  return cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: (process.env.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
+  })
+}
+
+function resolvedProjectId(): string | undefined {
+  if (hasJsonFile) {
+    try {
+      const j = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS!, 'utf8'))
+      return j.project_id?.trim()
+    } catch { return undefined }
+  }
+  return process.env.FIREBASE_PROJECT_ID?.trim()
+}
+
+const adminApp =
+  getApps().find((a) => a.name === 'admin') ??
+  initializeApp({ credential: credential(), projectId: resolvedProjectId() }, 'admin')
+
+const firestoreDatabaseId = process.env.FIRESTORE_DATABASE_ID?.trim() || '(default)'
+
+export const adminDb = getFirestore(adminApp, firestoreDatabaseId)
+```
+
+Also create `src/lib/gemini.ts` — a shared Gemini client used by all routes:
+
+```typescript
+// aligncore-be/src/lib/gemini.ts
+import { GoogleGenAI } from '@google/genai'
+
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error('GEMINI_API_KEY is not set in environment')
+}
+
+export const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+
+export const MODELS = {
+  flash: 'gemini-2.0-flash',
+  embedding: 'text-embedding-004',
+} as const
+
+export async function generateText(prompt: string): Promise<string> {
+  const result = await genai.models.generateContent({
+    model: MODELS.flash,
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+  })
+  return result.text ?? ''
+}
+
+export async function embedText(text: string): Promise<number[]> {
+  const result = await genai.models.embedContent({
+    model: MODELS.embedding,
+    contents: [{ role: 'user', parts: [{ text }] }],
+  })
+  return result.embeddings?.[0]?.values ?? []
+}
+
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0
+  let dot = 0, magA = 0, magB = 0
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i]; magA += a[i] ** 2; magB += b[i] ** 2
+  }
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB))
+}
 ```
 
 ### BE Step 3: Seed Script (Hour 1–2)
@@ -368,7 +448,7 @@ seed().catch(err => { console.error(err); process.exit(1) })
 Run the seed:
 ```bash
 cd aligncore-be
-npx ts-node src/scripts/seed.ts
+pnpm seed
 ```
 
 ### BE Step 4: WAHA Webhook Route (Hours 2–6)
@@ -379,105 +459,78 @@ Create `src/routes/waha.ts`:
 
 ```typescript
 // aligncore-be/src/routes/waha.ts
-import { Router, Request, Response } from 'express'
+import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { FieldValue } from 'firebase-admin/firestore'
-import { GoogleGenAI } from '@google/genai'
+import { generateText } from '../lib/gemini'
 
 export const wahaRouter = Router()
-const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
 
-wahaRouter.post('/webhook', async (req: Request, res: Response) => {
+const DEMO_RE_ID = process.env.DEMO_RE_ID ?? 'demo-re-001'
+
+wahaRouter.post('/webhook', async (req, res) => {
   try {
     const body = req.body
 
-    // WAHA sends all event types; only process incoming messages
     if (body.event !== 'message') {
-      res.json({ ok: true, skipped: true })
-      return
+      return res.json({ ok: true, skipped: true })
     }
 
     const messageText: string = body.payload?.body ?? ''
     const fromNumber: string = body.payload?.from ?? ''
 
     if (!messageText.trim()) {
-      res.json({ ok: true, skipped: 'empty message' })
-      return
+      return res.json({ ok: true, skipped: 'empty message' })
     }
 
-    console.log(`[WAHA] Message from ${fromNumber}: "${messageText}"`)
+    if (fromNumber) console.log(`[waha] inbound from ${fromNumber}`)
 
-    // ── Gemini Sentiment Analysis ─────────────────────────────────────────
-    const sentimentResult = await genai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: `You are an ecosystem relationship health analyser.
-
-A mentor or company founder sent this WhatsApp message as part of their mentorship check-in:
-"${messageText}"
-
-Analyse this message and respond ONLY with a valid JSON object — no markdown, no code fences:
-{
-  "sentiment": "POSITIVE" | "NEGATIVE" | "NEUTRAL",
-  "health_score_delta": <number between -0.25 and +0.25>,
-  "keywords": [<up to 3 key topics>],
-  "reasoning": "<one sentence explaining the delta>"
-}
+    const sentimentPrompt = `
+Analyze the sentiment of this WhatsApp message from a mentee about their mentor relationship.
+Reply with JSON only, no markdown:
+{"sentiment":"POSITIVE"|"NEGATIVE"|"NEUTRAL","health_score_delta":<-0.25 to 0.25>}
 
 Rules:
-- POSITIVE: engaged session, progress made, excited → positive delta (0.05–0.20)
-- NEGATIVE: missed sessions, struggling, disengaged → negative delta (-0.05 to -0.25)
-- NEUTRAL: generic update, no strong signal → delta near 0 (-0.04 to +0.04)`,
-            },
-          ],
-        },
-      ],
-    })
+- POSITIVE: progress, engaged, excited → delta 0.05–0.20
+- NEGATIVE: missed sessions, disengaged → delta -0.05 to -0.25
+- NEUTRAL: generic update → delta -0.04 to 0.04
 
-    const rawText = sentimentResult.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}'
-    const analysis = JSON.parse(rawText.replace(/```json\n?|\n?```/g, '').trim())
-    console.log('[Gemini]', analysis)
+Message: "${messageText.replace(/"/g, "'")}"`.trim()
 
-    // ── Update Firestore RE ───────────────────────────────────────────────
-    // In production: look up RE by WhatsApp number. For demo: hardcoded.
-    const reRef = adminDb.collection('relationships').doc('demo-re-001')
-    const reDoc = await reRef.get()
+    const raw = await generateText(sentimentPrompt)
+    let sentiment = 'NEUTRAL', delta = 0
 
-    if (!reDoc.exists) {
-      res.status(404).json({ ok: false, error: 'RE not found' })
-      return
+    try {
+      const parsed = JSON.parse(raw.replace(/```json?\n?/gi, '').replace(/```/g, '').trim())
+      sentiment = parsed.sentiment ?? 'NEUTRAL'
+      delta = parsed.health_score_delta ?? 0
+    } catch {
+      console.warn('[waha] Failed to parse Gemini sentiment response, defaulting to NEUTRAL')
     }
 
-    const currentHealth: number = reDoc.data()?.engagement?.health_score ?? 0.5
-    const delta: number = analysis.health_score_delta ?? 0
-    const newHealth = parseFloat(Math.min(1, Math.max(0, currentHealth + delta)).toFixed(2))
+    const reRef = adminDb.collection('relationships').doc(DEMO_RE_ID)
+    const snap = await reRef.get()
+
+    if (!snap.exists) {
+      console.warn('[waha] Relationship doc missing:', DEMO_RE_ID)
+      return res.status(404).json({ ok: false, error: 'RE not found' })
+    }
+
+    const currentHealth: number = snap.data()?.engagement?.health_score ?? 0.5
+    const newHealth = Math.min(1, Math.max(0, currentHealth + delta))
+    const textField = messageText.length <= 200 ? messageText : `${messageText.slice(0, 197)}...`
 
     await reRef.update({
+      'comms.last_sentiment': sentiment,
+      'comms.last_message_text': textField,
+      'comms.last_wa_at': new Date().toISOString(),
       'engagement.health_score': newHealth,
-      'engagement.last_message_at': FieldValue.serverTimestamp(),
-      'comms.last_sentiment': analysis.sentiment,
-      'comms.last_message_text': messageText.slice(0, 200),
-      'comms.last_keywords': analysis.keywords ?? [],
-      updated_at: FieldValue.serverTimestamp(),
+      updated_at: new Date().toISOString(),
     })
 
-    console.log(`[Firestore] health ${currentHealth} → ${newHealth} (Δ${delta})`)
-
-    res.json({
-      ok: true,
-      sentiment: analysis.sentiment,
-      health_score_before: currentHealth,
-      health_score_after: newHealth,
-      delta,
-      reasoning: analysis.reasoning,
-    })
+    return res.json({ ok: true, sentiment, health_score_before: currentHealth, health_score_after: newHealth, delta })
   } catch (err) {
     console.error('[WAHA Webhook Error]', err)
-    res.status(500).json({ ok: false, error: String(err) })
+    return res.status(500).json({ ok: false, error: String(err) })
   }
 })
 ```
@@ -490,47 +543,47 @@ Create `src/routes/demo.ts`:
 
 ```typescript
 // aligncore-be/src/routes/demo.ts
-import { Router, Request, Response } from 'express'
+import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { FieldValue } from 'firebase-admin/firestore'
 
 export const demoRouter = Router()
 
-async function updateRE(sentiment: 'POSITIVE' | 'NEGATIVE', healthScore: number, message: string) {
-  await adminDb.collection('relationships').doc('demo-re-001').update({
-    'engagement.health_score': healthScore,
-    'engagement.last_message_at': FieldValue.serverTimestamp(),
+const DEMO_RE_ID = process.env.DEMO_RE_ID ?? 'demo-re-001'
+const RE_REF = () => adminDb.collection('relationships').doc(DEMO_RE_ID)
+
+async function updateRE(sentiment: string, healthScore: number, lastMessage: string): Promise<void> {
+  await RE_REF().update({
     'comms.last_sentiment': sentiment,
-    'comms.last_message_text': message,
-    updated_at: FieldValue.serverTimestamp(),
+    'engagement.health_score': healthScore,
+    'comms.last_message_text': lastMessage,
+    updated_at: new Date().toISOString(),
   })
 }
 
-demoRouter.get('/simulate-positive', async (_req: Request, res: Response) => {
-  await updateRE(
-    'POSITIVE',
-    0.87,
-    'Had a great session with Ahmad today! We mapped out our Series A fundraising strategy for the next 6 months.'
-  )
-  res.json({ ok: true, sentiment: 'POSITIVE', health_score: 0.87 })
+demoRouter.get('/simulate-positive', async (_req, res) => {
+  try {
+    await updateRE('POSITIVE', 0.87, 'Had a great session with Ahmad today! We mapped out our Series A fundraising strategy for the next 6 months.')
+    res.json({ ok: true, sentiment: 'POSITIVE', health_score: 0.87 })
+  } catch (err) { res.status(500).json({ ok: false, error: String(err) }) }
 })
 
-demoRouter.get('/simulate-negative', async (_req: Request, res: Response) => {
-  await updateRE(
-    'NEGATIVE',
-    0.31,
-    'Sorry, we missed our last two sessions. Things are a bit hectic right now.'
-  )
-  res.json({ ok: true, sentiment: 'NEGATIVE', health_score: 0.31 })
+demoRouter.get('/simulate-negative', async (_req, res) => {
+  try {
+    await updateRE('NEGATIVE', 0.31, 'Sorry, we missed our last two sessions. Things are a bit hectic right now.')
+    res.json({ ok: true, sentiment: 'NEGATIVE', health_score: 0.31 })
+  } catch (err) { res.status(500).json({ ok: false, error: String(err) }) }
 })
 
-demoRouter.get('/reset', async (_req: Request, res: Response) => {
-  await updateRE('NEUTRAL' as any, 0.72, '')
-  await adminDb.collection('relationships').doc('demo-re-001').update({
-    'comms.last_sentiment': null,
-    'comms.last_message_text': null,
-  })
-  res.json({ ok: true, reset: true, health_score: 0.72 })
+demoRouter.get('/reset', async (_req, res) => {
+  try {
+    await RE_REF().update({
+      'comms.last_sentiment': null,
+      'comms.last_message_text': null,
+      'engagement.health_score': 0.72,
+      updated_at: new Date().toISOString(),
+    })
+    res.json({ ok: true, reset: true, health_score: 0.72 })
+  } catch (err) { res.status(500).json({ ok: false, error: String(err) }) }
 })
 ```
 
@@ -540,122 +593,78 @@ Create `src/routes/match.ts`:
 
 ```typescript
 // aligncore-be/src/routes/match.ts
-import { Router, Request, Response } from 'express'
+import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { GoogleGenAI } from '@google/genai'
+import { genai, MODELS, embedText, cosineSimilarity } from '../lib/gemini'
 
 export const matchRouter = Router()
-const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
 
-// Cosine similarity helper
-function cosineSimilarity(a: number[], b: number[]): number {
-  const dot = a.reduce((sum, ai, i) => sum + ai * b[i], 0)
-  const magA = Math.sqrt(a.reduce((sum, ai) => sum + ai * ai, 0))
-  const magB = Math.sqrt(b.reduce((sum, bi) => sum + bi * bi, 0))
-  return magA && magB ? dot / (magA * magB) : 0
-}
-
-// Embed text via Gemini embedContent (no Vertex SA creds needed)
-async function embed(text: string): Promise<number[]> {
-  const result = await genai.models.embedContent({
-    model: 'text-embedding-004',
-    contents: [{ role: 'user', parts: [{ text }] }],
-  })
-  return result.embeddings?.[0]?.values ?? []
-}
-
-matchRouter.post('/', async (req: Request, res: Response) => {
+matchRouter.post('/', async (req, res) => {
   try {
-    const { company_profile } = req.body
+    const { company_profile } = req.body as { company_profile: Record<string, string> }
 
-    if (!company_profile?.name) {
-      res.status(400).json({ error: 'company_profile required' })
-      return
+    if (!company_profile?.name?.trim()) {
+      return res.status(400).json({ error: 'company_profile.name is required' })
     }
 
-    const companyText = `
-      Company: ${company_profile.name}
-      Industry: ${company_profile.industry}
-      Stage: ${company_profile.stage}
-      Problem: ${company_profile.problem}
-      Mentorship goals: ${company_profile.goals}
-    `.trim()
+    const profileText = [
+      company_profile.name,
+      company_profile.industry,
+      company_profile.stage,
+      company_profile.problem,
+      company_profile.goals,
+    ].filter(Boolean).join('. ')
 
-    // Step 1: Embed company profile
-    const companyEmbedding = await embed(companyText)
+    const profileEmbedding = await embedText(profileText)
 
-    // Step 2: Fetch mentors and score by cosine similarity
-    const mentorSnap = await adminDb
-      .collection('mentors')
-      .where('available', '==', true)
-      .get()
+    let mentorsSnap = await adminDb.collection('mentors').where('available', '==', true).get()
+    if (mentorsSnap.empty) mentorsSnap = await adminDb.collection('mentors').get()
 
-    const scored: Array<{ mentor: FirebaseFirestore.DocumentData; similarity: number }> = []
+    const mentors = mentorsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as any))
+    if (mentors.length === 0) return res.json({ matches: [] })
 
-    for (const doc of mentorSnap.docs) {
-      const mentor = doc.data()
-      const mentorText = `
-        Mentor: ${mentor.name}
-        Industry: ${mentor.industry}
-        Skills: ${mentor.expertise?.join(', ')}
-        Background: ${mentor.bio}
-      `.trim()
+    const scored = await Promise.all(
+      mentors.map(async (mentor: any) => {
+        const mentorText = [mentor.name, mentor.industry, mentor.bio, ...(mentor.expertise ?? [])].filter(Boolean).join('. ')
+        const score = cosineSimilarity(profileEmbedding, await embedText(mentorText))
+        return { mentor, score }
+      })
+    )
 
-      const mentorEmbedding = await embed(mentorText)
-      scored.push({ mentor: { id: doc.id, ...mentor }, similarity: cosineSimilarity(companyEmbedding, mentorEmbedding) })
+    const top3 = scored.sort((a, b) => b.score - a.score).slice(0, 3)
+
+    const rerankPrompt = `You are an expert startup mentor matching system.
+
+Company: ${profileText}
+
+Top 3 mentor candidates:
+${top3.map(({ mentor, score }, i) => `${i + 1}. ${mentor.name} (${mentor.industry ?? ''}) cosine=${score.toFixed(3)}\n   id: ${mentor.id}\n   Expertise: ${(mentor.expertise ?? []).join(', ')}\n   Bio: ${mentor.bio}`).join('\n\n')}
+
+Reply with JSON only (no markdown):
+[{"id":"...","rank":1,"ai_match_score":0.0-1.0,"reasoning":"2 sentences why this mentor fits this company"},...]`
+
+    const raw = await genai.models.generateContent({ model: MODELS.flash, contents: [{ role: 'user', parts: [{ text: rerankPrompt }] }] }).then(r => r.text ?? '[]')
+
+    let rankings: any[] = []
+    try {
+      rankings = JSON.parse(raw.replace(/```json?\n?/gi, '').replace(/```/g, '').trim())
+    } catch {
+      rankings = top3.map(({ mentor, score }, i) => ({ id: mentor.id, rank: i + 1, ai_match_score: score, reasoning: 'Strong domain expertise alignment.' }))
     }
 
-    const top3 = scored.sort((a, b) => b.similarity - a.similarity).slice(0, 3)
+    const matches = rankings.map((r) => {
+      const found = top3.find(({ mentor }) => mentor.id === r.id)
+      if (!found) return null
+      const m = found.mentor
+      return { id: m.id, name: m.name, industry: m.industry ?? '', expertise: m.expertise ?? [], bio: m.bio, ai_match_score: r.ai_match_score, reasoning: r.reasoning, rank: r.rank }
+    }).filter(Boolean)
 
-    // Step 3: Gemini re-ranks and writes reasoning
-    const candidatesList = top3
-      .map((m, i) => `${i + 1}. ${m.mentor.name} (${m.mentor.industry}) — ${m.mentor.bio}`)
-      .join('\n')
+    matches.sort((a: any, b: any) => a.rank - b.rank)
 
-    const reasoningResult = await genai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: `You are an expert ecosystem relationship matcher.
-
-Company:
-${companyText}
-
-Top 3 mentor candidates (pre-ranked by embedding similarity):
-${candidatesList}
-
-For each mentor, write a concise 2-sentence reasoning explaining WHY they are a strong fit for this specific company at this stage. Be concrete — mention specific synergies, not generic praise.
-
-Respond ONLY with a JSON array — no markdown:
-[
-  { "rank": 1, "mentor_name": "...", "match_score": <0.0-1.0>, "reasoning": "..." },
-  { "rank": 2, "mentor_name": "...", "match_score": <0.0-1.0>, "reasoning": "..." },
-  { "rank": 3, "mentor_name": "...", "match_score": <0.0-1.0>, "reasoning": "..." }
-]`,
-            },
-          ],
-        },
-      ],
-    })
-
-    const rawReasoning = reasoningResult.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]'
-    const reasoned: any[] = JSON.parse(rawReasoning.replace(/```json\n?|\n?```/g, '').trim())
-
-    const matches = top3.map((item, i) => ({
-      ...item.mentor,
-      similarity_score: parseFloat(item.similarity.toFixed(3)),
-      ai_match_score: reasoned[i]?.match_score ?? item.similarity,
-      reasoning: reasoned[i]?.reasoning ?? 'Strong domain expertise alignment.',
-      rank: i + 1,
-    }))
-
-    res.json({ matches, company: company_profile })
+    return res.json({ matches })
   } catch (err) {
     console.error('[Match Error]', err)
-    res.status(500).json({ error: String(err) })
+    return res.status(500).json({ error: String(err) })
   }
 })
 ```
@@ -666,81 +675,92 @@ Create `src/routes/chat.ts`:
 
 ```typescript
 // aligncore-be/src/routes/chat.ts
-import { Router, Request, Response } from 'express'
+import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { FieldValue } from 'firebase-admin/firestore'
-import { GoogleGenAI } from '@google/genai'
+import { genai, MODELS } from '../lib/gemini'
 
 export const chatRouter = Router()
-const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
 
-const SYSTEM_PROMPT = `You are AlignCore AI's onboarding assistant. Your job is to collect a company profile through friendly, conversational chat — NOT a form.
+const SYSTEM_PROMPT = `You are AlignCore AI's onboarding assistant. Collect a company profile through friendly chat — not a form.
 
 Collect these 6 fields naturally, one at a time:
-1. Company name
-2. Industry / sector
-3. Company stage (Pre-seed / Seed / Series A / Growth)
-4. Main problem the company is solving
-5. What they want from a mentor
-6. Founder's WhatsApp number (for check-in messages)
+1. name — company name
+2. industry — sector (e.g. FinTech, Deep Tech, HealthTech, SaaS)
+3. stage — Idea / Pre-seed / Seed / Series A / Growth
+4. problem — main challenge or problem they're solving
+5. goals — what they want from mentorship
+6. whatsapp — founder's WhatsApp number (for check-ins)
 
 Rules:
-- Be warm and conversational. Never list the fields as a numbered form.
-- Ask one question at a time. Ask follow-ups to get richer answers.
-- Once you have all 6 fields, output a JSON block wrapped in <PROFILE> tags:
+- Be warm and concise. Ask one question at a time.
+- If the user volunteers several fields, acknowledge all and continue.
+- Only when all 6 are confirmed, output this exact tagged block once (no prose inside the tags):
   <PROFILE>{"name":"...","industry":"...","stage":"...","problem":"...","goals":"...","whatsapp":"..."}</PROFILE>
-- After the JSON, say: "Great! Your profile is ready. Head to the Match page to find your top mentors."
-- While still collecting — respond in plain conversational text only. No JSON.`
+- After the closing tag in the same reply, thank them briefly and mention they can use Match to find top mentors.
 
-chatRouter.post('/', async (req: Request, res: Response) => {
+Before completion: conversational text only; never output PROFILE or partial JSON outside the tags.`
+
+interface IncomingMessage {
+  role: 'user' | 'model'
+  parts?: Array<{ text: string }>
+  text?: string  // API contract shape: { role, text }
+}
+
+function toGeminiParts(m: IncomingMessage): Array<{ text: string }> {
+  if (m.parts?.length) return m.parts
+  if (typeof m.text === 'string' && m.text.length > 0) return [{ text: m.text }]
+  return []
+}
+
+chatRouter.post('/', async (req, res) => {
   try {
-    const { messages, session_id } = req.body
-
-    if (!messages?.length) {
-      res.status(400).json({ error: 'messages array required' })
-      return
+    const { messages, session_id } = req.body as {
+      messages: IncomingMessage[]
+      session_id: string
     }
 
-    const contents = messages.map((m: { role: string; text: string }) => ({
-      role: m.role,
-      parts: [{ text: m.text }],
+    if (!messages?.length || !session_id) {
+      return res.status(400).json({ error: 'messages (non-empty) and session_id are required' })
+    }
+
+    const contents = messages.map((m) => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: toGeminiParts(m),
     }))
 
     const result = await genai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      model: MODELS.flash,
       contents,
+      config: { systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] } },
     })
 
-    const reply: string = result.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-
-    // Extract profile if complete
-    const profileMatch = reply.match(/<PROFILE>([\s\S]*?)<\/PROFILE>/)
-    let profileExtracted: object | null = null
+    const replyRaw = result.text ?? ''
+    const profileMatch = replyRaw.match(/<PROFILE>([\s\S]*?)<\/PROFILE>/)
+    let profileExtracted: Record<string, string> | null = null
+    let isComplete = false
 
     if (profileMatch) {
       try {
-        profileExtracted = JSON.parse(profileMatch[1])
-        await adminDb
-          .collection('onboarding_sessions')
-          .doc(session_id ?? 'demo-session')
-          .set(
-            { profile: profileExtracted, completed_at: FieldValue.serverTimestamp(), status: 'COMPLETE' },
-            { merge: true }
-          )
-      } catch (e) {
-        console.error('[Profile parse error]', e)
+        profileExtracted = JSON.parse(profileMatch[1].trim()) as Record<string, string>
+        isComplete = true
+        await adminDb.collection('onboarding_sessions').doc(session_id).set({
+          ...profileExtracted,
+          session_id,
+          completed_at: new Date().toISOString(),
+        })
+      } catch {
+        console.warn('[chat] Failed to parse PROFILE JSON')
       }
     }
 
-    res.json({
-      reply: reply.replace(/<PROFILE>[\s\S]*?<\/PROFILE>/, '').trim(),
+    return res.json({
+      reply: replyRaw.replace(/<PROFILE>[\s\S]*?<\/PROFILE>\s*/, '').trim(),
       profile_extracted: profileExtracted,
-      is_complete: !!profileExtracted,
+      is_complete: isComplete,
     })
   } catch (err) {
     console.error('[Chat Error]', err)
-    res.status(500).json({ error: String(err) })
+    return res.status(500).json({ error: String(err) })
   }
 })
 ```
@@ -749,7 +769,7 @@ chatRouter.post('/', async (req: Request, res: Response) => {
 
 ```bash
 cd aligncore-be
-npm run dev
+pnpm dev
 # Server running on http://localhost:4000
 
 # Verify health
@@ -807,25 +827,31 @@ Scan the QR with the demo phone (your personal WhatsApp or a dedicated number). 
 Create `Dockerfile` in `aligncore-be/`:
 
 ```dockerfile
-FROM node:20-alpine
+FROM node:20-slim
+RUN corepack enable
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --prod --frozen-lockfile
+COPY dist/ ./dist/
+ENV PORT=4000
 EXPOSE 4000
 CMD ["node", "dist/index.js"]
 ```
 
+> **Note:** The Dockerfile only copies `dist/` — run `pnpm build` locally first, then deploy.
+
 ```bash
-# Build and deploy BE
+# Build locally, then deploy
+pnpm build
+
+# Deploy BE — use Secret Manager for GOOGLE_APPLICATION_CREDENTIALS in prod
 gcloud run deploy aligncore-be \
   --source . \
   --region asia-southeast1 \
   --port 4000 \
   --allow-unauthenticated \
-  --set-env-vars "FIREBASE_PROJECT_ID=...,GEMINI_API_KEY=...,FIREBASE_CLIENT_EMAIL=...,FIREBASE_PRIVATE_KEY=..."
-  # Note: set FIREBASE_PRIVATE_KEY in Secret Manager for production
+  --set-env-vars "GEMINI_API_KEY=...,FIRESTORE_DATABASE_ID=aligncore-db,DEMO_RE_ID=demo-re-001"
+  # Mount service account JSON via Secret Manager or use Workload Identity instead of GOOGLE_APPLICATION_CREDENTIALS
 
 # Deploy WAHA
 docker pull devlikeapro/waha
@@ -1493,7 +1519,7 @@ Both devs do this together.
 | Service | Dev URL | Notes |
 |---|---|---|
 | Next.js FE | `http://localhost:3001` | `pnpm dev` in `aligncore-fe/` |
-| Express BE | `http://localhost:4000` | `npm run dev` in `aligncore-be/` |
+| Express BE | `http://localhost:4000` | `pnpm dev` in `aligncore-be/` |
 | WAHA | `http://localhost:3000` | Docker container |
 
 ---
@@ -1534,7 +1560,7 @@ Both devs do this together.
 
 | Hours | BE Dev | FE Dev |
 |---|---|---|
-| 1 | Project setup, Express, Firebase Admin, env | Install deps, Firebase client, `api.ts` |
+| 1 | Project setup, Express, pnpm, Firebase Admin, env | Install deps, Firebase client, `api.ts` |
 | 2 | Seed script → run → confirm Firestore populated | Dashboard skeleton + `HealthScore` component |
 | 2–3 | Demo simulation routes (share BE URL with FE dev) | `RelationshipCard` + live `onSnapshot` dashboard |
 | 3–4 | — | Dashboard fully working with simulation buttons |
@@ -1555,7 +1581,7 @@ Both devs do this together.
 | What breaks | Quick fix |
 |---|---|
 | WAHA session expired | Click "Simulate Positive" button on dashboard — same code path |
-| BE Cloud Run down | Run `npm run dev` on BE dev's laptop, tunnel via `npx localtunnel --port 4000` |
+| BE Cloud Run down | Run `pnpm dev` on BE dev's laptop, tunnel via `npx localtunnel --port 4000` |
 | Gemini embedding fails | `text-embedding-004` via Gemini API is the same client — already the primary path |
 | Matching too slow | Show hardcoded Firestore mentor data; narrate the AI reasoning from slides |
 | Onboarding chat crashes | Demo from pre-recorded video segment |
@@ -1568,8 +1594,9 @@ Both devs do this together.
 ```bash
 # ── BE ────────────────────────────────────────────────────────────────────────
 cd aligncore-be
-npm run dev                    # start BE on :4000
-npx ts-node src/scripts/seed.ts  # seed Firestore (once)
+pnpm install                   # once (respects pnpm-lock.yaml)
+pnpm dev                       # start BE on :4000
+pnpm seed                      # seed Firestore (once)
 
 curl http://localhost:4000/api/health
 curl http://localhost:4000/api/demo/simulate-positive

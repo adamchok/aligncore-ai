@@ -13,7 +13,11 @@ const app = express()
 const PORT = Number(process.env.PORT ?? 4000)
 
 // ── Middleware ──────────────────────────────────────────────────────────────
-app.use(cors())
+app.use(
+  cors({
+    origin: process.env.FE_ORIGIN?.trim() || true,
+  })
+)
 app.use(express.json())
 
 // ── Routes ──────────────────────────────────────────────────────────────────
@@ -23,7 +27,7 @@ app.use('/api/chat', chatRouter)
 app.use('/api/demo', demoRouter)
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, ts: new Date().toISOString() })
+  res.json({ ok: true, uptime: process.uptime() })
 })
 
 // ── Start ───────────────────────────────────────────────────────────────────
