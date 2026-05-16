@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { sendChat, ChatMessage } from '@/lib/api'
-import { MessageSquare, Send, Loader2, Bot, User, Sparkles } from 'lucide-react'
+import { MessageSquare, Send, Loader2, Bot, User, Sparkles, CheckCircle2, ArrowRight } from 'lucide-react'
+import Link from 'next/link'
 
 const WELCOME = `Hi! I'm AlignCore AI. I'll help onboard your startup into our ecosystem.
 
@@ -13,6 +14,7 @@ export default function OnboardPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string | undefined>()
+  const [completedCompanyId, setCompletedCompanyId] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -33,6 +35,9 @@ export default function OnboardPage() {
     try {
       const data = await sendChat(nextMessages, sessionId)
       setSessionId(data.sessionId)
+      if (data.is_complete && data.company_id) {
+        setCompletedCompanyId(data.company_id)
+      }
       setMessages([...nextMessages, { role: 'model', text: data.reply }])
     } catch {
       setMessages([...nextMessages, { role: 'model', text: 'Sorry, I had trouble responding. Please try again.' }])
@@ -64,6 +69,23 @@ export default function OnboardPage() {
         </h1>
         <p className="text-sm text-slate-500 mt-0.5">AI-guided startup onboarding</p>
       </div>
+
+      {/* Success banner */}
+      {completedCompanyId && (
+        <div className="flex items-center gap-3 bg-emerald-950/50 border border-emerald-500/30 rounded-xl px-4 py-3 mb-4 flex-shrink-0">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-emerald-300">Onboarding complete!</p>
+            <p className="text-xs text-emerald-600">Company profile created and saved to the ecosystem.</p>
+          </div>
+          <Link
+            href={`/companies/${completedCompanyId}`}
+            className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 font-medium flex-shrink-0 transition-colors"
+          >
+            View profile <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      )}
 
       {/* Chat window */}
       <div className="flex-1 bg-slate-800/40 border border-slate-700/50 rounded-2xl overflow-hidden flex flex-col min-h-0">

@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Read-only public collections (FE reads via onSnapshot / getDoc) ────────
+    // All WRITES come from the BE via Admin SDK — Admin SDK bypasses rules entirely.
+    // The FE is read-only, so every collection here is: read=true, write=false.
+
+    match /mentors/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /companies/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /relationships/{docId} {
+      allow read: if true;
+      allow write: if false;
+
+      // Subcollection — also satisfies collectionGroup('history') queries on the dashboard
+      match /history/{histId} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+
+    // Real-time event feed — append-only from BE, read-only from FE
+    match /activity_log/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ── Internal collections (BE-only, no FE access) ─────────────────────────
+
+    // Onboarding chat sessions — written and read entirely by the BE
+    match /onboarding_sessions/{docId} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // Deny everything else by default (Firestore implicit default, made explicit)
+    match /{document=**} {
+      allow read: if false;
+      allow write: if false;
+    }
+  }
+}

@@ -10,6 +10,9 @@ import { chatRouter } from './routes/chat'
 import { demoRouter } from './routes/demo'
 import { entitiesRouter } from './routes/entities'
 import { aiRouter } from './routes/ai'
+import { aiExtractRouter } from './routes/aiExtract'
+import { csvImportRouter } from './routes/csvImport'
+import { docExtractRouter } from './routes/docExtract'
 
 const app = express()
 const PORT = Number(process.env.PORT ?? 4000)
@@ -28,7 +31,10 @@ app.use('/api/match', matchRouter)
 app.use('/api/chat', chatRouter)
 app.use('/api/demo', demoRouter)
 app.use('/api/entities', entitiesRouter)
+app.use('/api/entities', csvImportRouter)
 app.use('/api/ai', aiRouter)
+app.use('/api/ai', aiExtractRouter)
+app.use('/api/ai', docExtractRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() })

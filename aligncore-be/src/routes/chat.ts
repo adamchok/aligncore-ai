@@ -1,6 +1,9 @@
+import { randomUUID } from 'crypto'
 import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { genai, MODELS } from '../lib/gemini'
+import { generateChat } from '../lib/ai'
+import { logActivity } from '../lib/activity'
+import { normalizePhone } from './waha'
 
 export const chatRouter = Router()
 
@@ -40,13 +43,17 @@ function toGeminiParts(m: IncomingChatMessage): Array<{ text: string }> {
 
 chatRouter.post('/', async (req, res) => {
   try {
-    const { messages, session_id } = req.body as {
+    const { messages, sessionId: bodySessionId, session_id } = req.body as {
       messages: IncomingChatMessage[]
-      session_id: string
+      sessionId?: string
+      session_id?: string
     }
 
-    if (!messages?.length || !session_id) {
-      return res.status(400).json({ error: 'messages (non-empty) and session_id are required' })
+    // Accept camelCase (FE) or snake_case (legacy); generate a new ID if absent
+    const sessionId = bodySessionId || session_id || randomUUID()
+
+    if (!messages?.length) {
+      return res.status(400).json({ error: 'messages (non-empty) is required' })
     }
 
     for (let i = 0; i < messages.length; i++) {
@@ -57,37 +64,68 @@ chatRouter.post('/', async (req, res) => {
       }
     }
 
-    const contents = messages.map((m) => ({
-      role: m.role === 'model' ? 'model' : 'user',
-      parts: toGeminiParts(m),
-    }))
+    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> =
+      messages.map((m) => ({
+        role: (m.role === 'model' ? 'model' : 'user') as 'user' | 'model',
+        parts: toGeminiParts(m),
+      }))
 
-    const result = await genai.models.generateContent({
-      model: MODELS.flash,
-      contents,
-      config: {
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      },
-    })
-
-    const replyRaw = result.text ?? ''
+    const replyRaw = await generateChat(contents, SYSTEM_PROMPT)
 
     const profileMatch = replyRaw.match(/<PROFILE>([\s\S]*?)<\/PROFILE>/)
     let profileExtracted: Record<string, string> | null = null
     let isComplete = false
+
+    let autoCompanyId: string | null = null
 
     if (profileMatch) {
       try {
         profileExtracted = JSON.parse(profileMatch[1].trim()) as Record<string, string>
         isComplete = true
 
-        await adminDb.collection('onboarding_sessions').doc(session_id).set({
+        await adminDb.collection('onboarding_sessions').doc(sessionId).set({
           ...profileExtracted,
-          session_id,
+          session_id: sessionId,
           completed_at: new Date().toISOString(),
         })
 
-        console.log(`[chat] Onboarding complete for session ${session_id}`)
+        await logActivity(adminDb, {
+          type: 'ONBOARDING_COMPLETE',
+          entity_type: 'onboarding',
+          entity_id: sessionId,
+          entity_name: profileExtracted.name || 'Unknown',
+          detail: `Onboarding complete for "${profileExtracted.name || 'company'}" via AI chat`,
+        })
+
+        // Auto-create company entity from completed profile
+        const { name, industry, stage, problem, goals, whatsapp } = profileExtracted
+        if (name?.trim() && industry?.trim() && stage?.trim()) {
+          try {
+            const companyDoc = {
+              name: name.trim(),
+              industry: industry.trim(),
+              stage: stage.trim(),
+              problem: problem?.trim() ?? '',
+              goals: goals?.trim() ?? '',
+              size: '',
+              whatsapp_number: normalizePhone(whatsapp ?? ''),
+              created_at: new Date().toISOString(),
+            }
+            const companyRef = await adminDb.collection('companies').add(companyDoc)
+            autoCompanyId = companyRef.id
+            await logActivity(adminDb, {
+              type: 'COMPANY_CREATED',
+              entity_type: 'company',
+              entity_id: companyRef.id,
+              entity_name: name.trim(),
+              detail: `Company "${name.trim()}" auto-created from onboarding chat`,
+            })
+          } catch (companyErr) {
+            console.warn('[chat] Auto-create company failed:', companyErr)
+          }
+        }
+
+        console.log(`[chat] Onboarding complete for session ${sessionId}`)
       } catch {
         console.warn('[chat] Failed to parse PROFILE JSON')
       }
@@ -97,8 +135,10 @@ chatRouter.post('/', async (req, res) => {
 
     return res.json({
       reply,
+      sessionId,
       profile_extracted: profileExtracted,
       is_complete: isComplete,
+      company_id: autoCompanyId,
     })
   } catch (err) {
     console.error('[chat] error:', err)

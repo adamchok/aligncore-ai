@@ -1,7 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { db } from '@/lib/firebase'
+import { collection, onSnapshot, QueryDocumentSnapshot } from 'firebase/firestore'
 import { matchMentors, createRelationship, MatchResult, CompanyProfile } from '@/lib/api'
+import type { Company, RelationshipEntity } from '@/lib/types'
 import {
   Sparkles,
   Loader2,
@@ -11,9 +14,14 @@ import {
   ChevronRight,
   CheckCircle2,
   Brain,
+  ChevronDown,
+  X,
 } from 'lucide-react'
 
 const STAGE_OPTS = ['Pre-seed', 'Seed', 'Series A', 'Series B', 'Growth', 'Late Stage']
+
+// Lifecycle states that count as "actively mentored" (ineligible for a new match)
+const ACTIVE_LIFECYCLES = new Set(['ACTIVE', 'AT_RISK', 'PAUSED'])
 
 function MatchCard({
   match,
@@ -53,9 +61,7 @@ function MatchCard({
 
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-slate-100">{match.name}</h3>
-        {match.industry && (
-          <p className="text-xs text-indigo-400 mt-0.5">{match.industry}</p>
-        )}
+        {match.industry && <p className="text-xs text-indigo-400 mt-0.5">{match.industry}</p>}
       </div>
 
       <p className="text-xs text-slate-400 mb-3 leading-relaxed line-clamp-3">{match.bio}</p>
@@ -106,22 +112,74 @@ function MatchCard({
   )
 }
 
-export default function MatchPage() {
-  const [form, setForm] = useState<CompanyProfile & { company_id: string }>({
-    company_id: '',
-    name: '',
-    industry: '',
-    stage: '',
-    problem: '',
-    goals: '',
-    mentor_expertise: '',
-  })
+const EMPTY_FORM: CompanyProfile & { company_id: string } = {
+  company_id: '',
+  name: '',
+  industry: '',
+  stage: '',
+  problem: '',
+  goals: '',
+  mentor_expertise: '',
+}
 
+export default function MatchPage() {
+  const [companies, setCompanies] = useState<Company[]>([])
+  const [relationships, setRelationships] = useState<RelationshipEntity[]>([])
+  const [selectedCompanyId, setSelectedCompanyId] = useState('')
+
+  const [form, setForm] = useState(EMPTY_FORM)
   const [matches, setMatches] = useState<MatchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [creatingId, setCreatingId] = useState<string | null>(null)
   const [createdIds, setCreatedIds] = useState<Set<string>>(new Set())
+
+  // Subscribe to companies + relationships
+  useEffect(() => {
+    const u1 = onSnapshot(collection(db, 'companies'), (snap) =>
+      setCompanies(snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as Company)))
+    )
+    const u2 = onSnapshot(collection(db, 'relationships'), (snap) =>
+      setRelationships(snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as RelationshipEntity)))
+    )
+    return () => { u1(); u2() }
+  }, [])
+
+  // Companies that are not currently in an active mentorship
+  const busyCompanyIds = new Set(
+    relationships.filter((r) => ACTIVE_LIFECYCLES.has(r.lifecycle)).map((r) => r.company_id)
+  )
+  const availableCompanies = companies
+    .filter((c) => !busyCompanyIds.has(c.id))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  function handleSelectCompany(id: string) {
+    setSelectedCompanyId(id)
+    if (!id) {
+      setForm(EMPTY_FORM)
+      return
+    }
+    const c = companies.find((co) => co.id === id)
+    if (!c) return
+    setForm({
+      company_id: c.id,
+      name: c.name,
+      industry: c.industry ?? '',
+      stage: c.stage ?? '',
+      problem: c.problem ?? '',
+      goals: c.goals ?? '',
+      mentor_expertise: form.mentor_expertise, // keep existing expertise filter
+    })
+    setMatches([])
+    setCreatedIds(new Set())
+  }
+
+  function clearSelection() {
+    setSelectedCompanyId('')
+    setForm(EMPTY_FORM)
+    setMatches([])
+    setCreatedIds(new Set())
+  }
 
   async function handleMatch() {
     if (!form.name.trim()) return
@@ -164,6 +222,8 @@ export default function MatchPage() {
     }
   }
 
+  const selectedCompany = selectedCompanyId ? companies.find((c) => c.id === selectedCompanyId) : null
+
   return (
     <div className="max-w-5xl">
       <div className="mb-8">
@@ -176,6 +236,73 @@ export default function MatchPage() {
         <h2 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
           <Building2 className="w-4 h-4 text-violet-400" /> Company Profile
         </h2>
+
+        {/* Company picker */}
+        <div className="mb-5">
+          <label className="block text-xs font-medium text-slate-400 mb-1.5">
+            Select Company
+            {availableCompanies.length > 0 && (
+              <span className="ml-2 text-[10px] text-slate-600">
+                {availableCompanies.length} without an active mentor
+              </span>
+            )}
+          </label>
+
+          {selectedCompany ? (
+            // Selected state — compact chip
+            <div className="flex items-center gap-3 bg-indigo-950/50 border border-indigo-500/30 rounded-xl px-4 py-2.5">
+              <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-violet-600/20 border border-violet-500/30 flex-shrink-0">
+                <Building2 className="w-3.5 h-3.5 text-violet-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-100 truncate">{selectedCompany.name}</p>
+                <p className="text-[10px] text-indigo-400">
+                  {selectedCompany.industry} · {selectedCompany.stage}
+                </p>
+              </div>
+              <button
+                onClick={clearSelection}
+                className="flex-shrink-0 text-slate-500 hover:text-slate-300 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            // Dropdown
+            <div className="relative">
+              <select
+                value={selectedCompanyId}
+                onChange={(e) => handleSelectCompany(e.target.value)}
+                className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-colors pr-9"
+              >
+                <option value="">— fill in manually below —</option>
+                {availableCompanies.length > 0 && (
+                  <optgroup label="Companies without active mentor">
+                    {availableCompanies.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}  ·  {c.industry}  ·  {c.stage}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {availableCompanies.length === 0 && companies.length > 0 && (
+                  <option disabled value="">All companies already have an active mentor</option>
+                )}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div className="flex items-center gap-3 mb-5">
+          <div className="flex-1 h-px bg-slate-700/60" />
+          <span className="text-[10px] text-slate-600 uppercase tracking-wide">
+            {selectedCompany ? 'edit profile below' : 'or fill manually'}
+          </span>
+          <div className="flex-1 h-px bg-slate-700/60" />
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-medium text-slate-400 mb-1.5">Company Name *</label>

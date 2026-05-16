@@ -1,7 +1,6 @@
 import fs from 'fs'
 import path from 'path'
 import {
-  applicationDefault,
   cert,
   getApps,
   initializeApp,
@@ -51,7 +50,8 @@ const resolvedProjectId =
 
 function credential() {
   if (hasServiceAccountJson) {
-    return applicationDefault()
+    const json = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS!, 'utf8'))
+    return cert(json)
   }
   return cert({
     projectId: process.env.FIREBASE_PROJECT_ID,

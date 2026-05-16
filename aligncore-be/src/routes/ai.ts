@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { generateText } from '../lib/gemini'
+import { generateText } from '../lib/ai'
+import { logActivity } from '../lib/activity'
 
 export const aiRouter = Router()
 
@@ -52,6 +53,14 @@ Write the summary now (no markdown, no headings):
       ai_summary: summary.trim(),
       ai_summary_updated_at: now,
       updated_at: now,
+    })
+
+    await logActivity(adminDb, {
+      type: 'SUMMARY_GENERATED',
+      entity_type: 'relationship',
+      entity_id: reId,
+      entity_name: `${re.company_name ?? re.company_id} ↔ ${re.mentor_name ?? re.mentor_id}`,
+      detail: 'AI summary generated for relationship',
     })
 
     return res.json({ summary: summary.trim() })

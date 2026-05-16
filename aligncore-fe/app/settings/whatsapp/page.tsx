@@ -1,25 +1,37 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { wahaGetSession, wahaGetQR, wahaStartSession, wahaRestartSession, WAHASession } from '@/lib/api'
+import {
+  wahaGetSession,
+  wahaGetSessionMe,
+  wahaGetQR,
+  wahaStartSession,
+  wahaRestartSession,
+  WAHASession,
+  WAHASessionMe,
+  formatWahaEngine,
+  formatWahaLinkedPhone,
+  normalizeWahaUiStatus,
+  type WahaUiStatus,
+} from '@/lib/api'
 import { Smartphone, RefreshCw, CheckCircle2, AlertCircle, Loader2, QrCode, Play, RotateCcw } from 'lucide-react'
 import Image from 'next/image'
 
-type ConnectStatus = 'CONNECTED' | 'DISCONNECTED' | 'SCAN_QR_CODE' | 'STARTING' | 'STOPPED' | 'UNKNOWN'
-
-const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ElementType }> = {
+const STATUS_CONFIG: Record<WahaUiStatus, { label: string; color: string; icon: React.ElementType }> = {
   CONNECTED: { label: 'Connected', color: 'text-emerald-400', icon: CheckCircle2 },
   DISCONNECTED: { label: 'Disconnected', color: 'text-rose-400', icon: AlertCircle },
   SCAN_QR_CODE: { label: 'Waiting for QR Scan', color: 'text-amber-400', icon: QrCode },
   STARTING: { label: 'Starting…', color: 'text-indigo-400', icon: Loader2 },
   STOPPED: { label: 'Stopped', color: 'text-slate-500', icon: AlertCircle },
+  FAILED: { label: 'Failed', color: 'text-rose-400', icon: AlertCircle },
   UNKNOWN: { label: 'Unknown', color: 'text-slate-500', icon: AlertCircle },
 }
 
 export default function WhatsAppSettingsPage() {
   const [session, setSession] = useState<WAHASession | null>(null)
+  const [linkedProfile, setLinkedProfile] = useState<WAHASessionMe | null>(null)
   const [qr, setQr] = useState<string | null>(null)
-  const [status, setStatus] = useState<ConnectStatus>('UNKNOWN')
+  const [status, setStatus] = useState<WahaUiStatus>('UNKNOWN')
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
@@ -29,8 +41,14 @@ export default function WhatsAppSettingsPage() {
     try {
       const sess = await wahaGetSession()
       setSession(sess)
-      const sessionStatus = (sess.status?.toUpperCase() as ConnectStatus) ?? 'UNKNOWN'
+      const sessionStatus = normalizeWahaUiStatus(sess.status)
       setStatus(sessionStatus)
+
+      if (sessionStatus === 'CONNECTED') {
+        setLinkedProfile(await wahaGetSessionMe())
+      } else {
+        setLinkedProfile(null)
+      }
 
       if (sessionStatus === 'SCAN_QR_CODE') {
         const qrData = await wahaGetQR()
@@ -40,6 +58,7 @@ export default function WhatsAppSettingsPage() {
       }
     } catch {
       setStatus('UNKNOWN')
+      setLinkedProfile(null)
     } finally {
       setLoading(false)
       setLastRefreshed(new Date())
@@ -70,6 +89,8 @@ export default function WhatsAppSettingsPage() {
 
   const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.UNKNOWN
   const StatusIcon = cfg.icon
+  const engineLabel = session ? formatWahaEngine(session.engine) : null
+  const phoneLabel = formatWahaLinkedPhone(linkedProfile)
 
   return (
     <div className="max-w-xl">
@@ -101,17 +122,25 @@ export default function WhatsAppSettingsPage() {
             <span className="text-sm">Checking status…</span>
           </div>
         ) : (
-          <div className="flex items-center gap-3">
+          <div className="flex items-start gap-4">
             <StatusIcon
-              className={`w-6 h-6 ${cfg.color} ${status === 'STARTING' ? 'animate-spin' : ''}`}
+              className={`w-6 h-6 shrink-0 mt-0.5 ${cfg.color} ${status === 'STARTING' ? 'animate-spin' : ''}`}
             />
-            <div>
-              <p className={`text-base font-semibold ${cfg.color}`}>{cfg.label}</p>
+            <div className="flex min-w-0 flex-col gap-2">
+              <p className={`text-base font-semibold leading-snug ${cfg.color}`}>{cfg.label}</p>
               {session?.name && (
-                <p className="text-xs text-slate-500 mt-0.5">Session: {session.name}</p>
+                <p className="text-xs leading-snug text-slate-500">Session: {session.name}</p>
               )}
-              {session?.engine && (
-                <p className="text-xs text-slate-600">Engine: {session.engine}</p>
+              {status === 'CONNECTED' && phoneLabel && (
+                <p className="text-xs leading-snug text-slate-400">
+                  Linked number: <span className="font-mono text-slate-300">{phoneLabel}</span>
+                  {linkedProfile?.pushName ? (
+                    <span className="text-slate-500"> · {linkedProfile.pushName}</span>
+                  ) : null}
+                </p>
+              )}
+              {engineLabel && (
+                <p className="text-xs leading-snug text-slate-600">Engine: {engineLabel}</p>
               )}
             </div>
           </div>
@@ -147,21 +176,12 @@ export default function WhatsAppSettingsPage() {
         </div>
       )}
 
-      {status === 'CONNECTED' && (
-        <div className="bg-emerald-950/30 border border-emerald-500/30 rounded-2xl p-5 mb-4">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-            <p className="text-sm text-emerald-300 font-medium">WhatsApp is connected</p>
-          </div>
-          <p className="text-xs text-slate-500 mt-1.5">
-            Incoming messages from mentors and companies will be processed automatically via WAHA webhook.
-          </p>
-        </div>
-      )}
-
       {/* Actions */}
       <div className="flex gap-3">
-        {(status === 'STOPPED' || status === 'DISCONNECTED' || status === 'UNKNOWN') && (
+        {(status === 'STOPPED' ||
+          status === 'DISCONNECTED' ||
+          status === 'UNKNOWN' ||
+          status === 'FAILED') && (
           <button
             onClick={() => handleAction('start')}
             disabled={!!actionLoading}
@@ -175,7 +195,7 @@ export default function WhatsAppSettingsPage() {
             Start Session
           </button>
         )}
-        {(status === 'CONNECTED' || status === 'SCAN_QR_CODE') && (
+        {(status === 'CONNECTED' || status === 'SCAN_QR_CODE' || status === 'FAILED') && (
           <button
             onClick={() => handleAction('restart')}
             disabled={!!actionLoading}

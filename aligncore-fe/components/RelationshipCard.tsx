@@ -146,19 +146,22 @@ export default function RelationshipCard({ re, history = [] }: Props) {
           </button>
 
           {showLifecycleMenu && (
-            <div className="absolute right-0 bottom-full mb-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl shadow-black/60 overflow-hidden z-20 min-w-[140px]">
-              {LIFECYCLE_OPTIONS.map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => handleLifecycleChange(opt)}
-                  className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-800 transition-colors ${
-                    opt === lifecycle ? 'text-indigo-300 font-semibold' : 'text-slate-300'
-                  }`}
-                >
-                  {opt.replace('_', ' ')}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setShowLifecycleMenu(false)} />
+              <div className="absolute right-0 bottom-full mb-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl shadow-black/60 overflow-hidden z-20 min-w-[140px]">
+                {LIFECYCLE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt}
+                    onClick={() => handleLifecycleChange(opt)}
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-800 transition-colors ${
+                      opt === lifecycle ? 'text-indigo-300 font-semibold' : 'text-slate-300'
+                    }`}
+                  >
+                    {opt.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>

@@ -11,12 +11,16 @@ import {
   Smartphone,
   ChevronRight,
   Zap,
+  Activity,
 } from 'lucide-react'
 
 const NAV = [
   {
     group: 'Overview',
-    items: [{ href: '/', label: 'Dashboard', icon: LayoutDashboard }],
+    items: [
+      { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+      { href: '/activity', label: 'Activity', icon: Activity },
+    ],
   },
   {
     group: 'Entities',

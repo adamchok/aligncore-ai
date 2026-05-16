@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "prod": "aligncore-ai-db"
+  },
+  "targets": {},
+  "etags": {}
+}

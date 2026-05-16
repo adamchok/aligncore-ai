@@ -9,8 +9,9 @@ import {
   collectionGroup,
   QueryDocumentSnapshot,
 } from 'firebase/firestore'
-import type { RelationshipEntity, HealthHistory } from '@/lib/types'
+import type { RelationshipEntity, HealthHistory, Company } from '@/lib/types'
 import RelationshipCard from '@/components/RelationshipCard'
+import IndustryStatsPanel from '@/components/IndustryStatsPanel'
 import { demoPositive, demoNegative, demoReset } from '@/lib/api'
 import {
   Activity,
@@ -54,6 +55,7 @@ function StatCard({
 
 export default function DashboardPage() {
   const [relationships, setRelationships] = useState<RelationshipEntity[]>([])
+  const [companies, setCompanies] = useState<Company[]>([])
   const [historyMap, setHistoryMap] = useState<Record<string, HealthHistory[]>>({})
   const [loading, setLoading] = useState(true)
   const [demoLoading, setDemoLoading] = useState<string | null>(null)
@@ -64,6 +66,13 @@ export default function DashboardPage() {
         snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as RelationshipEntity))
       )
       setLoading(false)
+    })
+    return unsub
+  }, [])
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'companies'), (snap) => {
+      setCompanies(snap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, ...d.data() } as Company)))
     })
     return unsub
   }, [])
@@ -150,6 +159,9 @@ export default function DashboardPage() {
           accent="bg-amber-600/20 text-amber-400"
         />
       </div>
+
+      {/* Industry Stats */}
+      <IndustryStatsPanel companies={companies} relationships={relationships} />
 
       {/* Demo Controls */}
       <div className="bg-slate-800/40 border border-slate-700/40 rounded-2xl p-4 mb-8">

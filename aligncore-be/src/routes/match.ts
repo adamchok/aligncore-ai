@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { adminDb } from '../lib/firebase-admin'
-import { embedText, cosineSimilarity, generateText } from '../lib/gemini'
+import { embedText, cosineSimilarity } from '../lib/gemini'
+import { generateText } from '../lib/ai'
 
 export const matchRouter = Router()
 
@@ -25,6 +26,8 @@ interface MentorDoc {
   /** optional curated single label */
   industry?: string
   available?: boolean
+  /** cached embedding — written by entities.ts on create/update */
+  embedding?: number[]
 }
 
 interface MatchResult {
@@ -76,7 +79,7 @@ matchRouter.post('/', async (req, res) => {
       .filter(Boolean)
       .join('. ')
 
-    const profileEmbedding = await embedText(profileText)
+    const profileEmbedding = await embedText(profileText, 'RETRIEVAL_QUERY')
 
     let mentorsSnap = await adminDb.collection('mentors').where('available', '==', true).get()
 
@@ -92,19 +95,32 @@ matchRouter.post('/', async (req, res) => {
 
     const scored = await Promise.all(
       mentors.map(async (mentor) => {
-        const mentorText = [
-          mentor.name,
-          mentor.bio,
-          ...(mentor.expertise ?? []),
-          ...(mentor.industries ?? []),
-          mentor.industry,
-        ]
-          .filter(Boolean)
-          .join('. ')
+        let mentorEmbedding: number[]
 
-        const mentorEmbedding = await embedText(mentorText)
-        const score = cosineSimilarity(profileEmbedding, mentorEmbedding)
-        return { mentor, score }
+        const cached = mentor.embedding
+        if (cached?.length && cached.length === profileEmbedding.length) {
+          mentorEmbedding = cached
+        } else {
+          // No cache, wrong length (old model), or empty: compute and persist
+          const mentorText = [
+            mentor.name,
+            mentor.bio,
+            ...(mentor.expertise ?? []),
+            ...(mentor.industries ?? []),
+            mentor.industry,
+          ]
+            .filter(Boolean)
+            .join('. ')
+
+          mentorEmbedding = await embedText(mentorText, 'RETRIEVAL_DOCUMENT')
+
+          // Cache for next time — fire-and-forget
+          adminDb.collection('mentors').doc(mentor.id)
+            .update({ embedding: mentorEmbedding })
+            .catch(() => {})
+        }
+
+        return { mentor, score: cosineSimilarity(profileEmbedding, mentorEmbedding) }
       })
     )
 

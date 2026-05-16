@@ -6,6 +6,7 @@ import { collection, onSnapshot, QueryDocumentSnapshot } from 'firebase/firestor
 import type { Mentor } from '@/lib/types'
 import { createMentor } from '@/lib/api'
 import { Users, Plus, X, Loader2, CheckCircle2, Briefcase } from 'lucide-react'
+import Link from 'next/link'
 
 const EXPERTISE_OPTS = [
   'Product', 'Growth', 'Fundraising', 'Engineering', 'Design', 'Operations',
@@ -55,10 +56,11 @@ export default function MentorsPage() {
   const [showModal, setShowModal] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   const [form, setForm] = useState({
     name: '', bio: '', industry: '', available: true,
-    expertise: [] as string[],
+    expertise: [] as string[], whatsapp_number: '',
   })
 
   useEffect(() => {
@@ -83,6 +85,7 @@ export default function MentorsPage() {
   async function handleSave() {
     if (!form.name.trim() || !form.bio.trim()) return
     setSaving(true)
+    setSaveError(null)
     try {
       await createMentor({
         name: form.name.trim(),
@@ -90,15 +93,17 @@ export default function MentorsPage() {
         industry: form.industry.trim(),
         expertise: form.expertise,
         available: form.available,
+        whatsapp_number: form.whatsapp_number.trim(),
       })
       setSaved(true)
       setTimeout(() => {
         setSaved(false)
         setShowModal(false)
-        setForm({ name: '', bio: '', industry: '', available: true, expertise: [] })
+        setForm({ name: '', bio: '', industry: '', available: true, expertise: [], whatsapp_number: '' })
       }, 1200)
-    } catch {
-      setSaving(false)
+    } catch (e) {
+      setSaveError('Failed to save mentor. Please try again.')
+      console.error(e)
     } finally {
       setSaving(false)
     }
@@ -130,7 +135,11 @@ export default function MentorsPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {mentors.map((m) => <MentorCard key={m.id} mentor={m} />)}
+          {mentors.map((m) => (
+            <Link key={m.id} href={`/mentors/${m.id}`}>
+              <MentorCard mentor={m} />
+            </Link>
+          ))}
         </div>
       )}
 
@@ -162,6 +171,18 @@ export default function MentorsPage() {
                   value={form.industry}
                   onChange={(e) => setForm((f) => ({ ...f, industry: e.target.value }))}
                   placeholder="e.g. FinTech, SaaS"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  WhatsApp Number
+                  <span className="ml-1.5 text-[9px] text-slate-600 font-normal">links inbound messages to this mentor</span>
+                </label>
+                <input
+                  value={form.whatsapp_number}
+                  onChange={(e) => setForm((f) => ({ ...f, whatsapp_number: e.target.value }))}
+                  placeholder="e.g. +60123456789"
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-colors"
                 />
               </div>
@@ -208,7 +229,13 @@ export default function MentorsPage() {
               </div>
             </div>
 
-            <div className="flex gap-3 mt-6">
+            {saveError && (
+              <p className="mt-4 text-xs text-rose-400 bg-rose-950/40 border border-rose-700/30 rounded-xl px-3 py-2">
+                {saveError}
+              </p>
+            )}
+
+            <div className="flex gap-3 mt-4">
               <button
                 onClick={() => setShowModal(false)}
                 className="flex-1 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl transition-colors"
@@ -217,7 +244,7 @@ export default function MentorsPage() {
               </button>
               <button
                 onClick={handleSave}
-                disabled={saving || !form.name.trim() || !form.bio.trim()}
+                disabled={saving || saved || !form.name.trim() || !form.bio.trim()}
                 className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors"
               >
                 {saved ? (
