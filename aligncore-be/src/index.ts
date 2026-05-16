@@ -8,6 +8,8 @@ import { wahaRouter } from './routes/waha'
 import { matchRouter } from './routes/match'
 import { chatRouter } from './routes/chat'
 import { demoRouter } from './routes/demo'
+import { entitiesRouter } from './routes/entities'
+import { aiRouter } from './routes/ai'
 
 const app = express()
 const PORT = Number(process.env.PORT ?? 4000)
@@ -25,6 +27,8 @@ app.use('/api/waha', wahaRouter)
 app.use('/api/match', matchRouter)
 app.use('/api/chat', chatRouter)
 app.use('/api/demo', demoRouter)
+app.use('/api/entities', entitiesRouter)
+app.use('/api/ai', aiRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() })

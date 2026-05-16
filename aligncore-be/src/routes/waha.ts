@@ -5,6 +5,75 @@ import { generateText } from '../lib/gemini'
 export const wahaRouter = Router()
 
 const DEMO_RE_ID = process.env.DEMO_RE_ID ?? 'demo-re-001'
+const WAHA_URL = process.env.WAHA_URL ?? 'http://localhost:3000'
+const WAHA_SESSION = process.env.WAHA_SESSION ?? 'default'
+const WAHA_API_KEY = process.env.WAHA_API_KEY ?? ''
+
+function wahaHeaders(): Record<string, string> {
+  return WAHA_API_KEY ? { 'X-Api-Key': WAHA_API_KEY } : {}
+}
+
+// ── WAHA Proxy endpoints ─────────────────────────────────────────────────────
+
+wahaRouter.get('/session', async (_req, res) => {
+  try {
+    const r = await fetch(`${WAHA_URL}/api/sessions/${WAHA_SESSION}`, {
+      headers: wahaHeaders(),
+    })
+    const data = await r.json()
+    return res.status(r.status).json(data)
+  } catch (err) {
+    return res.status(502).json({ error: String(err) })
+  }
+})
+
+wahaRouter.get('/qr', async (_req, res) => {
+  try {
+    const r = await fetch(
+      `${WAHA_URL}/api/${WAHA_SESSION}/auth/qr?format=image`,
+      { headers: wahaHeaders() }
+    )
+    if (!r.ok) return res.json({ qr: null, status: 'unavailable' })
+    const contentType = r.headers.get('content-type') ?? ''
+    if (contentType.includes('image')) {
+      const buf = Buffer.from(await r.arrayBuffer())
+      const qr = `data:${contentType};base64,${buf.toString('base64')}`
+      return res.json({ qr, status: 'SCAN_QR_CODE' })
+    }
+    const data = await r.json() as { qr?: string; status?: string }
+    return res.json({ qr: data.qr ?? null, status: data.status ?? 'SCAN_QR_CODE' })
+  } catch (err) {
+    return res.status(502).json({ error: String(err) })
+  }
+})
+
+wahaRouter.post('/session/start', async (_req, res) => {
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...wahaHeaders() }
+    const r = await fetch(`${WAHA_URL}/api/sessions/${WAHA_SESSION}/start`, {
+      method: 'POST',
+      headers,
+    })
+    const data = await r.json() as Record<string, unknown>
+    return res.status(r.status).json({ ok: r.ok, ...data })
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: String(err) })
+  }
+})
+
+wahaRouter.post('/session/restart', async (_req, res) => {
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...wahaHeaders() }
+    const r = await fetch(`${WAHA_URL}/api/sessions/${WAHA_SESSION}/restart`, {
+      method: 'POST',
+      headers,
+    })
+    const data = await r.json() as Record<string, unknown>
+    return res.status(r.status).json({ ok: r.ok, ...data })
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: String(err) })
+  }
+})
 
 interface WAHAPayload {
   event: string

@@ -10,40 +10,74 @@ import { adminDb } from '../lib/firebase-admin'
 
 const DEMO_RE_ID = process.env.DEMO_RE_ID ?? 'demo-re-001'
 
-/** Shape aligned with doc/MVP_Development_Guide.md Part 0 + RelationshipCard */
+const now = new Date().toISOString()
+
 const DEMO_RE = {
-  relationship_id: DEMO_RE_ID,
-  type: 'MENTOR_COMPANY',
-  lifecycle_state: 'ACTIVE',
-  company: {
-    name: 'NexGen Robotics',
-    industry: 'Deep Tech / Robotics',
-    stage: 'SEED',
-    founder: 'Sarah Tan',
-    whatsapp: '+601112345678',
-  },
-  mentor: {
-    name: 'Ahmad Farouk',
-    expertise: ['Hardware', 'Manufacturing', 'Fundraising'],
-  },
-  ai_data: {
-    match_score: 0.91,
-    match_reasoning:
-      'Hands-on robotics manufacturing and fundraising experience aligns with NexGen scaling hardware and raising Series A.',
-    confidence_level: 'HIGH',
-  },
+  mentor_id: 'mentor-001',
+  company_id: 'company-001',
+  mentor_name: 'Dr. Aisha Rahman',
+  company_name: 'NexGen Robotics',
+  lifecycle: 'ACTIVE',
   engagement: {
     health_score: 0.72,
-    session_count: 4,
-    avg_response_hours: 3.2,
+    sessions_completed: 4,
+    next_session: null,
   },
   comms: {
-    last_sentiment: 'NEUTRAL' as const,
+    last_sentiment: 'NEUTRAL',
     last_message_text: 'Relationship initialized.',
+    last_message_preview: 'Relationship initialized.',
+    last_wa_at: null,
   },
-  created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString(),
+  ai_summary: null,
+  ai_summary_updated_at: null,
+  match_score: 0.91,
+  match_reasoning:
+    'Strong FinTech and fundraising background aligns with NexGen Robotics scaling hardware and raising Series A.',
+  created_at: now,
+  updated_at: now,
 }
+
+const DEMO_RE_HISTORY = [
+  { score: 0.60, sentiment: 'NEUTRAL', timestamp: new Date(Date.now() - 7 * 86400000).toISOString() },
+  { score: 0.65, sentiment: 'POSITIVE', timestamp: new Date(Date.now() - 5 * 86400000).toISOString() },
+  { score: 0.70, sentiment: 'POSITIVE', timestamp: new Date(Date.now() - 3 * 86400000).toISOString() },
+  { score: 0.68, sentiment: 'NEUTRAL', timestamp: new Date(Date.now() - 1 * 86400000).toISOString() },
+  { score: 0.72, sentiment: 'NEUTRAL', timestamp: now },
+]
+
+const COMPANIES = [
+  {
+    id: 'company-001',
+    name: 'NexGen Robotics',
+    industry: 'Deep Tech',
+    stage: 'Seed',
+    problem: 'Building affordable industrial robotics for SMEs in Southeast Asia.',
+    goals: 'Raise Series A and expand to 3 new markets by end of year.',
+    size: '12',
+    created_at: now,
+  },
+  {
+    id: 'company-002',
+    name: 'MediTrack',
+    industry: 'HealthTech',
+    stage: 'Pre-seed',
+    problem: 'Digitizing patient records for rural clinics in Malaysia.',
+    goals: 'Achieve product-market fit and onboard 50 clinics.',
+    size: '5',
+    created_at: now,
+  },
+  {
+    id: 'company-003',
+    name: 'FinFlow',
+    industry: 'FinTech',
+    stage: 'Seed',
+    problem: 'Providing instant B2B payment solutions for SMEs across SEA.',
+    goals: 'Get regulatory approval and grow to $1M ARR.',
+    size: '8',
+    created_at: now,
+  },
+]
 
 const MENTORS = [
   {
@@ -54,7 +88,7 @@ const MENTORS = [
     industries: ['Finance', 'Banking', 'Insurance'],
     industry: 'Finance',
     available: true,
-    company_stage_fit: ['Pre-seed', 'Seed', 'Series A'],
+    created_at: now,
   },
   {
     id: 'mentor-002',
@@ -64,7 +98,7 @@ const MENTORS = [
     industries: ['Education', 'SaaS', 'Consumer'],
     industry: 'Education',
     available: true,
-    company_stage_fit: ['Seed', 'Series A', 'Growth'],
+    created_at: now,
   },
   {
     id: 'mentor-003',
@@ -74,7 +108,7 @@ const MENTORS = [
     industries: ['E-commerce', 'HealthTech', 'Consumer Apps', 'Marketplace'],
     industry: 'E-commerce',
     available: true,
-    company_stage_fit: ['Pre-seed', 'Seed', 'Series A'],
+    created_at: now,
   },
   {
     id: 'mentor-004',
@@ -84,7 +118,7 @@ const MENTORS = [
     industries: ['Manufacturing', 'Logistics', 'Enterprise', 'B2B'],
     industry: 'Manufacturing',
     available: true,
-    company_stage_fit: ['Series A', 'Growth'],
+    created_at: now,
   },
   {
     id: 'mentor-005',
@@ -94,27 +128,43 @@ const MENTORS = [
     industries: ['Healthcare', 'Telemedicine', 'BioTech', 'Wellness'],
     industry: 'Healthcare',
     available: true,
-    company_stage_fit: ['Idea', 'Pre-seed', 'Seed'],
+    created_at: now,
   },
 ]
 
 async function seed() {
-  console.log('🌱 Seeding Firestore...')
+  console.log('Seeding Firestore...')
   const projectId = getApp('admin').options.projectId ?? '(unknown)'
   const dbId = process.env.FIRESTORE_DATABASE_ID?.trim() || '(default)'
   console.log(`   Project: ${projectId}`)
   console.log(`   Database: ${dbId}`)
 
+  // Relationships
   await adminDb.collection('relationships').doc(DEMO_RE_ID).set(DEMO_RE)
-  console.log(`  ✅ relationships/${DEMO_RE_ID}`)
+  console.log(`  OK relationships/${DEMO_RE_ID}`)
 
+  // Health history subcollection
+  const histRef = adminDb.collection('relationships').doc(DEMO_RE_ID).collection('history')
+  for (const point of DEMO_RE_HISTORY) {
+    await histRef.add(point)
+  }
+  console.log(`  OK relationships/${DEMO_RE_ID}/history (${DEMO_RE_HISTORY.length} points)`)
+
+  // Companies
+  for (const company of COMPANIES) {
+    const { id, ...data } = company
+    await adminDb.collection('companies').doc(id).set(data)
+    console.log(`  OK companies/${id} — ${company.name}`)
+  }
+
+  // Mentors
   for (const mentor of MENTORS) {
     const { id, ...data } = mentor
     await adminDb.collection('mentors').doc(id).set(data)
-    console.log(`  ✅ mentors/${id} — ${mentor.name}`)
+    console.log(`  OK mentors/${id} — ${mentor.name}`)
   }
 
-  console.log('🎉 Seeding complete!')
+  console.log('Seeding complete!')
   process.exit(0)
 }
 
@@ -127,19 +177,17 @@ function isNotFound(err: unknown): boolean {
 }
 
 seed().catch((err) => {
-  console.error('❌ Seed failed:', err)
+  console.error('Seed failed:', err)
   if (isNotFound(err)) {
     const projectId = getApp('admin').options.projectId ?? '(unknown)'
     console.error(`
-Firestore returned NOT_FOUND — the SDK cannot find the Firestore database it is targeting (wrong/missing DB, or APIs off).
+Firestore returned NOT_FOUND — the SDK cannot find the Firestore database it is targeting.
 
 Checklist:
 1) Firebase Console → Firestore Database — create one if missing (Native mode, pick a region).
-2) If you use a **named** database (not "(default)"), set in .env: FIRESTORE_DATABASE_ID=aligncore-db (your console “Database ID”).
-3) Google Cloud Console for the same project → enable "Cloud Firestore API" if needed.
-4) GOOGLE_APPLICATION_CREDENTIALS JSON must belong to this project (project_id = "${projectId}").
-
-If keys came from another GCP project, regenerate from Firebase Project settings → Service accounts.
+2) If you use a named database (not "(default)"), set: FIRESTORE_DATABASE_ID=aligncore-db
+3) Google Cloud Console → enable "Cloud Firestore API" if needed.
+4) GOOGLE_APPLICATION_CREDENTIALS JSON must belong to project: ${projectId}
 `)
   }
   process.exit(1)
